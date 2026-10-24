@@ -228,7 +228,7 @@ MCP_PATH_KEYS = {"path", "file_path", "filepath", "filename", "file",
 
 SHELLS = {"sh", "bash", "zsh", "dash", "ksh"}
 WRAPPERS = {"env", "command", "exec", "nohup", "time", "nice", "sudo", "doas", "builtin"}
-WRITERS = {"rm", "mv", "cp", "tee", "truncate", "chmod", "chown", "chflags", "ln",
+WRITERS = {"rm", "mv", "cp", "tee", "truncate", "chmod", "chown", "chflags", "chattr", "ln",
            "install", "touch", "dd", "rsync", "unlink", "rmdir", "shred", "patch"}
 INPLACE = {"sed", "gsed", "perl", "ruby"}
 READERS_OK_FOR_GIT_DIR = {"ls", "cat", "head", "tail", "stat", "file", "test", "[",
@@ -2015,6 +2015,8 @@ _TYPED_APPROVAL = re.compile(r"(?i)\baccept\W+v?\d|\baccept\W+safety\W+changes\b
 # v1.0.0: the enforcement anchor is written only by the operator (accept) or
 # the installer (init); an agent never records its own changes as approved.
 _ANCHOR_WRITE = re.compile(r"(?i)\banchor\W+(accept|init)\b")
+# 1.0.0: `tessctl harden on|off` runs sudo to set or clear the OS file lock.
+_HARDEN_WRITE = re.compile(r"(?i)\bharden\W+(?!status\b)\w")
 # Programs that fake a terminal or type into one.
 _PTY_PROGRAMS = {"script", "expect", "unbuffer", "socat", "tmux", "screen", "dtach", "zpty",
                  "empty", "ttyexec", "pexpect"}
@@ -2074,6 +2076,10 @@ def _operator_form(words: list) -> bool:
     if sub in _STATE_SUBS:
         opts = _STATE_SUBS[sub]
         return not opts or _opt_given([w.lower() for w in words], opts)
+    # 1.0.0: `tessctl harden on|off` runs sudo to set or clear the OS file lock;
+    # only `harden` / `harden status` (read-only) is not an operator form.
+    if sub == "harden":
+        return pos[1:2] not in ((), ("status",))
     return False
 
 
@@ -2324,6 +2330,11 @@ def _check_operator_only(cmd: str, v) -> None:
             "anchor" in w and {"accept", "init"} & set(w[w.index("anchor") + 1:]) for _, w in calls):
         v.add(DENY, "only the operator can record Tess's safety files as approved "
                     "(`tessctl anchor accept`, in their own terminal)", "operator")
+    if (tess_text and _HARDEN_WRITE.search(code_text) and re.search(r"(?i)tessctl", code_text)) or any(
+            "harden" in w and [x for x in w[w.index("harden") + 1:] if not x.startswith("-")][:1]
+            not in ([], ["status"]) for _, w in calls):
+        v.add(DENY, "only the operator can lock or unlock Tess's files (`tessctl harden on` / "
+                    "`off` run sudo; run them in your own terminal)", "operator")
     if (fed or any(n in _PTY_PROGRAMS for n, _ in calls)
             or (calls and re.search(r"(?i)\baccept\b", flat))
             or (tess_text and (_PTY_WRAPPER.search(flat) or _TYPED_APPROVAL.search(flat)))):

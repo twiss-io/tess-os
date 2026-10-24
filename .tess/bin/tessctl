@@ -21056,6 +21056,227 @@ def _anchor_show_changes(root: Path, st: AnchorState) -> None:
         _anchor_print_lines(list(difflib.unified_diff(a, b, "approved", "now", lineterm="", n=2)), "    ")
 
 
+
+# ---------------------------------------------------------------------------
+# OPT-IN FILE LOCK: `tessctl harden on | off | status` (1.0.0, section 2;
+# design note: the round-4 fix report, section 8; operator decision 22 Oct).
+#
+# Off by default. `harden on` sets the operating system's root-owned
+# immutable flag on the files only Tess writes: `schg` (macOS, `sudo chflags
+# schg`) or `+i` (Linux, `sudo chattr +i`). While it is set, no process of
+# the operator's user (an agent's shell, a program the gate has no rule for)
+# can write, truncate, rename, replace or delete them, whatever the
+# spelling; clearing it needs root. This is an OS boundary under the gate
+# and the anchor, which stay exactly as they are.
+#
+#   * Only `harden on` and `harden off` ever run sudo, and only when the
+#     operator runs them at an interactive terminal outside Claude Code and
+#     Codex (the gate also refuses both to agents). No other command runs
+#     sudo: update, restore and the other commands that rewrite these files
+#     refuse while any of them is locked and say to run `harden off` first.
+#   * `harden on` refuses unless the anchor matches (or there is none) and
+#     `tessctl verify` passes, so a changed gate is never locked in.
+#   * Never locked: .claude/settings.local.json (Claude Code writes it), the
+#     repository's git config (git writes it), .mcp.json (the operator edits it).
+#   * Undo: `tessctl harden off`; by hand, `sudo chflags -R noschg <project>`
+#     (macOS) or `sudo chattr -R -i <project>` (Linux).
+# Limits (SECURITY.md): anything that can run sudo without a password (a
+# cached sudo session, a NOPASSWD rule) can clear the flag; new files can
+# still appear beside locked ones; git operations that rewrite a locked file
+# fail part-way, so unlock before checking out another version of Tess.
+# ---------------------------------------------------------------------------
+
+HARDEN_FILES = (".claude/settings.json", ".tess/tess.lock", "tessctl", MANIFEST_FILE)
+HARDEN_TREES = (".claude/hooks", ".tess/core", ".tess/bin")
+HARDEN_NEVER = (".claude/settings.local.json", ".git/config", ".mcp.json")
+HARDEN_LOCK_CONFIRM = "lock these files"
+HARDEN_UNLOCK_CONFIRM = "unlock these files"
+# Commands that rewrite files `harden on` locks (refused while any is locked).
+HARDEN_WRITERS = ("init", "restore", "update", "self-update", "publish", "override", "capture",
+                  "rollback", "render", "approve", "resolve", "reset")
+_SF_IMMUTABLE = getattr(stat, "SF_IMMUTABLE", 0x00020000)
+_FS_IOC_GETFLAGS = 0x80086601
+_FS_IMMUTABLE_FL = 0x00000010
+
+
+def _harden_paths(root: Path) -> list:
+    """The regular files `harden on` locks, relative to the project: the
+    Tess-only files and trees above, and the Tess hooks in the repository's
+    hooks folder. Symlinks are never followed or locked."""
+    out = []
+    for rel in HARDEN_FILES:
+        p = root / rel
+        if p.is_file() and not p.is_symlink():
+            out.append(rel)
+    for tree in HARDEN_TREES:
+        top = root / tree
+        if not top.is_dir() or top.is_symlink():
+            continue
+        for dirpath, dirnames, filenames in os.walk(top, followlinks=False):
+            dirnames[:] = sorted(d for d in dirnames if d != "__pycache__")
+            for n in sorted(filenames):
+                p = Path(dirpath) / n
+                if p.is_file() and not p.is_symlink():
+                    out.append(p.relative_to(root).as_posix())
+    gitdir = root / ".git"
+    hooks = gitdir / "hooks"
+    if hooks.is_dir() and not hooks.is_symlink() and not gitdir.is_symlink():
+        for p in sorted(hooks.iterdir()):
+            if p.is_file() and not p.is_symlink() and ANCHOR_GIT_MARKER.encode() in p.read_bytes():
+                out.append(p.relative_to(root).as_posix())
+    return [r for r in out if r not in HARDEN_NEVER]
+
+
+def _harden_flag(path: Path) -> "bool | None":
+    """True when the OS immutable flag is set on `path`, False when it is
+    not, None when this system cannot tell."""
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return None
+    if hasattr(st, "st_flags"):
+        return bool(st.st_flags & _SF_IMMUTABLE)
+    if sys.platform.startswith("linux"):
+        import struct
+        try:
+            import fcntl
+            fd = os.open(str(path), os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+            try:
+                got = fcntl.ioctl(fd, _FS_IOC_GETFLAGS, struct.pack("l", 0))
+            finally:
+                os.close(fd)
+            return bool(struct.unpack("l", got)[0] & _FS_IMMUTABLE_FL)
+        except (OSError, ImportError, struct.error):
+            return None
+    return None
+
+
+def _harden_state(root: Path) -> dict:
+    """{"locked": [...], "open": [...], "unknown": [...]} over _harden_paths."""
+    st = {"locked": [], "open": [], "unknown": []}
+    for rel in _harden_paths(root):
+        f = _harden_flag(root / rel)
+        st["locked" if f else "open" if f is False else "unknown"].append(rel)
+    return st
+
+
+def _harden_tool() -> "tuple | None":
+    """(set argv, clear argv) for this system, or None when it has no
+    root-owned immutable flag Tess supports."""
+    if sys.platform == "darwin":
+        return (["chflags", "schg"], ["chflags", "noschg"])
+    if sys.platform.startswith("linux"):
+        return (["chattr", "+i"], ["chattr", "-i"])
+    return None
+
+
+def _harden_run_sudo(root: Path, argv: list, rels: list) -> int:
+    """Run `sudo <argv> -- <files>` in batches, attached to the operator's
+    terminal so sudo asks for the password there. Only `harden on|off` call
+    this, after the presence check."""
+    rc = 0
+    for i in range(0, len(rels), 200):
+        files = [str(root / r) for r in rels[i:i + 200]]
+        rc = subprocess.run(["sudo", "--"] + argv + ["--"] + files, cwd=str(root)).returncode or rc
+        if rc:
+            break
+    return rc
+
+
+def _harden_refuse_if_locked(root: Path, verb: str) -> None:
+    """Commands that rewrite Tess's files stop, before changing anything,
+    while `harden on` has locked any of them (they never run sudo)."""
+    try:
+        locked = _harden_state(root)["locked"]
+    except OSError:
+        return
+    if locked:
+        sys.exit(f"tessctl {verb}: STOPPED — {len(locked)} of Tess's files are locked by "
+                 f"`tessctl harden on` (for example {locked[0]}), so this command cannot change "
+                 f"them. Nothing was changed. In your own terminal run `tessctl harden off`, then "
+                 f"this command again, then `tessctl harden on`.")
+
+
+def cmd_harden(args, root: Path) -> None:
+    """tessctl harden status | on | off — the opt-in OS file lock (see the
+    OPT-IN FILE LOCK block above)."""
+    sub = getattr(args, "harden_sub", None) or "status"
+    tool = _harden_tool()
+    st = _harden_state(root)
+    total = sum(len(v) for v in st.values())
+    if sub == "status":
+        if tool is None:
+            print("harden: not available on this system (macOS and Linux only); nothing is locked")
+            return
+        if not st["locked"]:
+            print(f"harden: off — none of Tess's {total} files is locked (opt-in: `tessctl harden on` "
+                  "in your own terminal)")
+        elif not st["open"] and not st["unknown"]:
+            print(f"harden: on — all {total} of Tess's files are locked; undo with `tessctl harden off`")
+        else:
+            print(f"harden: PARTIAL — {len(st['locked'])} of {total} files are locked; "
+                  f"{len(st['open'])} are not and {len(st['unknown'])} cannot be checked "
+                  f"(for example {(st['open'] + st['unknown'])[0]}). Run `tessctl harden on` again "
+                  "in your own terminal, or `tessctl harden off`.")
+        if st["locked"]:
+            print("  Anything that can run sudo without a password (a cached sudo session, a NOPASSWD "
+                  "rule) can clear the lock.")
+        return
+    if sub not in ("on", "off"):
+        sys.exit("tessctl harden: choose status | on | off")
+    if tool is None:
+        sys.exit("tessctl harden: REFUSED — this system has no root-owned file lock Tess supports "
+                 "(macOS and Linux only). Nothing was changed.")
+    # a person at a real terminal, outside an assistant session, before anything else
+    _require_terminal_for_questions(f"harden {sub}", "no file was locked or unlocked.")
+    if sub == "on":
+        a = _anchor_state(root)
+        if a.state not in ("ok", "none"):
+            sys.exit("tessctl harden on: REFUSED — " + "\n".join(_anchor_findings(root))
+                     + "\n  Locking now would lock in changed safety files. Nothing was changed.")
+        r = subprocess.run([sys.executable, "-I", "-B", str(Path(__file__).resolve()), "verify"],
+                           cwd=str(root), capture_output=True, text=True,
+                           env={**os.environ, "TESS_ROOT": str(root)})
+        if r.returncode != 0:
+            sys.exit("tessctl harden on: REFUSED — `tessctl verify` does not pass, so the files are "
+                     "not the release's. Fix what it reports first. Nothing was changed.")
+        todo = st["open"] + st["unknown"]
+        if not todo:
+            print(f"harden: on — all {total} of Tess's files are already locked")
+            return
+        _require_human_presence(
+            "harden on", f"locking {len(todo)} of Tess's files with the system's root-owned lock",
+            "no file was locked.", HARDEN_LOCK_CONFIRM, prompt="lock> ", lines=(
+                f"  This runs `sudo {' '.join(tool[0])}` on {len(todo)} files (sudo asks for your "
+                "password), for example:",
+                *[f"    {r}" for r in todo[:5]],
+                "  While they are locked, `tessctl update`, `restore` and similar commands stop and "
+                "ask you to run `tessctl harden off` first, and a git checkout of another Tess "
+                "version fails part-way.",
+                "  Never locked: .claude/settings.local.json, the repository's git config, .mcp.json.",
+                "  Undo at any time: `tessctl harden off`."))
+        rc = _harden_run_sudo(root, tool[0], todo)
+    else:
+        todo = st["locked"]
+        if not todo:
+            print("harden: off — nothing is locked")
+            return
+        _require_human_presence(
+            "harden off", f"unlocking {len(todo)} of Tess's files", "no file was unlocked.",
+            HARDEN_UNLOCK_CONFIRM, prompt="unlock> ", lines=(
+                f"  This runs `sudo {' '.join(tool[1])}` on {len(todo)} files (sudo asks for your "
+                "password).",))
+        rc = _harden_run_sudo(root, tool[1], todo)
+    after = _harden_state(root)
+    want = "locked" if sub == "on" else "open"
+    bad = [r for r in todo if r not in after[want]]
+    if rc or bad:
+        sys.exit(f"tessctl harden {sub}: did not finish — {len(bad)} file(s) are not "
+                 f"{'locked' if sub == 'on' else 'unlocked'} (for example "
+                 f"{(bad or todo)[0]}); sudo exited {rc}. Run `tessctl harden status`.")
+    print(f"harden: {sub} — {len(todo)} file(s) {'locked' if sub == 'on' else 'unlocked'}")
+
+
 def cmd_anchor(args, root: Path) -> None:
     """tessctl anchor status | accept | init — the out-of-repo record of Tess's
     approved safety files (see the ENFORCEMENT ANCHOR block above)."""
@@ -31200,6 +31421,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_anchor.add_argument("anchor_sub", nargs="?", default="status",
                           choices=["status", "accept", "init"])
 
+    # harden (1.0.0, opt-in OS file lock)
+    p_harden = sub.add_parser("harden", help="status | on | off: lock the files only Tess writes with "
+                                             "the system's root-owned flag (opt-in; uses sudo)")
+    p_harden.add_argument("harden_sub", nargs="?", default="status", choices=["status", "on", "off"])
+
     # doctor
     p_doctor = sub.add_parser("doctor", help="SHA-integrity check; flag security-tier drift")
     p_doctor.add_argument("--fix", action="store_true", help="auto-capture uncaptured drift")
@@ -32314,6 +32540,7 @@ def main() -> None:
         "init":         cmd_init,
         "restore":      cmd_restore,
         "anchor":       cmd_anchor,
+        "harden":       cmd_harden,
         "doctor":       cmd_doctor,
         "update":       cmd_update,
         "self-update":  cmd_self_update,
@@ -32378,6 +32605,11 @@ def main() -> None:
     fn = dispatch.get(args.command)
     if not fn:
         sys.exit(f"tessctl: unknown command: {args.command}")
+    # 1.0.0: commands that rewrite Tess's files stop while `harden on` locks any
+    # of them (a dry run or a check changes nothing and goes ahead).
+    if (args.command in HARDEN_WRITERS or (args.command == "lock" and getattr(args, "regen", False))) \
+            and not getattr(args, "dry_run", False) and not getattr(args, "check", False):
+        _harden_refuse_if_locked(root, args.command)
 
     # GateError propagated out of single-file command entrypoints (cmd_publish
     # single-target, cmd_override, cmd_approve, cmd_reset, cmd_resolve,

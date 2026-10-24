@@ -696,6 +696,34 @@ security reviews; they are stated so nobody relies on a check that is not there.
   adoption recomputed from the proven release's own manifest. An install whose
   anchor predates this has the manifest recorded, as it is then, by its next
   verified update (or by `tessctl anchor accept`).
+- **Optional OS file lock: `tessctl harden` (1.0.0, off by default).** `tessctl
+  harden on`, run by you in your own terminal, sets the operating system's
+  root-owned immutable flag on the files only Tess writes (`.claude/settings.json`,
+  `.claude/hooks/`, `.tess/core/`, `.tess/bin/`, `.tess/tess.lock`, `tessctl`,
+  `tess.manifest.json` and Tess's git hooks): `schg` on macOS (`sudo chflags
+  schg`), `+i` on Linux (`sudo chattr +i`). While it is set, no process running
+  as your user can write, truncate, rename, replace or delete those files,
+  whatever the spelling; clearing it needs root. It is an operating-system
+  boundary under the gate and the anchor, which are unchanged. Only `harden on`
+  and `harden off` ever run sudo, and only at an interactive terminal outside
+  Claude Code and Codex; the gate refuses both to agents, and refuses
+  `chflags`/`chattr` on protected paths. `harden on` refuses while the anchor
+  reports changed safety files or `tessctl verify` fails, so a changed gate is
+  never locked in. Never locked: `.claude/settings.local.json` (Claude Code
+  writes it), the repository's git config (git writes it) and `.mcp.json` (you
+  edit it); they stay under the anchor. While any file is locked, `update`,
+  `self-update`, `restore`, `render`, `rollback` and the other commands that
+  rewrite these files stop before changing anything and ask you to run
+  `tessctl harden off` first (none of them runs sudo); `tessctl harden status`
+  says whether the lock is off, on or partial. Undo: `tessctl harden off`, or
+  by hand `sudo chflags -R noschg <project>` (macOS) or `sudo chattr -R -i
+  <project>` (Linux). Limits: anything that can run sudo without a password (a
+  cached sudo session, a NOPASSWD rule) can clear the flag; new files can still
+  be created beside locked ones; a git checkout, merge, rebase or reset that
+  rewrites a locked file fails part-way, so unlock before checking out another
+  version of Tess; copies made with `cp -p`, `rsync -X` or `ditto` keep the
+  flag; file systems without the flag (tmpfs, some network drives) show as
+  not locked in `harden status`; Windows is not supported.
 - **`.claude/settings.local.json` is anchored by its content (since v1.0.x, Quinn
   GAP-1).** `{"disableAllHooks": true}` there switches every Claude Code hook
   off, Tess's gate included, and before this only a `tessctl doctor` run you
