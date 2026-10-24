@@ -185,6 +185,16 @@ Tess OS audits itself with the method it ships: the `security-audit` skill
   finding go to the private reporting channel in SECURITY.md, never to an
   issue, PR, commit or release note.
 
+### Security audit for security-tier changes
+
+A pull request that changes a security-tier or protected path (the gate,
+hooks, settings, lock, policy, workflows, security-tier doctrine) gets a
+scoped run of the same skill on its diff before Cyra drafts the covering
+verdict ([verification-routing.md](verification-routing.md), "Security Audit
+Is a Standard Step"). The verdict names the run's reviewed commit, scope,
+counts, validator result and `findings.json` sha256, never a finding's
+details.
+
 ### Pre-publish gate (before ANY `create-tess-v*` tag)
 
 `publish-npm.yml` publishes to npm when a `create-tess-v*` tag is pushed. Push that
@@ -232,6 +242,27 @@ root of trust. Since the v1.0 security audit, `tessctl verdict sign` also needs 
 maintainer at a terminal (typing `sign as Cyra`) and refuses a key with no
 passphrase, so an agent cannot sign through it: give the Cyra key a passphrase with
 `gpg --passwd <fingerprint>` before the first signature.
+
+---
+
+## Adopter: launching your own project
+
+Tess OS ships the same discipline for the apps your agents build. Before a
+first public deploy or a client-facing web release, follow
+[playbooks/launch-readiness.md](playbooks/launch-readiness.md):
+
+```bash
+# 1. Put your app code under the ship gate: replace the placeholder production
+#    rule in core/policy/policy.yaml with your real paths (doctor warns until then)
+python3 .tess/bin/tessctl doctor
+# 2. Open the checklist, answer each item with evidence or N/A with a reason
+python3 .tess/bin/tessctl launch init
+python3 .tess/bin/tessctl launch check
+# 3. Record the launch (refused while any item is unanswered)
+python3 .tess/bin/tessctl launch mark-launched
+```
+
+Details: `docs/LAUNCH_READINESS.md`.
 
 ---
 

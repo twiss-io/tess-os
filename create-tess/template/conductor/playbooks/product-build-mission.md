@@ -70,7 +70,7 @@ Before activating any guild, Tess must answer:
 3. **Specification** — Product defines requirements and acceptance criteria. Coding confirms feasibility. Design completes interface specification.
 4. **Design freeze** — Design is agreed before engineering begins. Changes after this point require explicit scope impact assessment.
 5. **Build** — Coding executes to specification. QA is involved from the start, not at the end.
-6. **Release readiness gate** — QA confirms all acceptance criteria are met. Ops confirms deployment readiness. CX confirms support readiness.
+6. **Release readiness gate** — QA confirms all acceptance criteria are met. Ops confirms deployment readiness. CX confirms support readiness. For a first public deploy or a client-facing web release, the [Launch Readiness](launch-readiness.md) checklist is answered first (`tessctl launch check` passes).
 7. **Release** — Rollout strategy confirmed (full / phased / feature-flagged). Incident response and rollback plan in place.
 8. **Post-launch review** — Analytics tracks against defined success criteria. CX monitors adoption. Product leads the review.
 
@@ -91,7 +91,7 @@ Before activating any guild, Tess must answer:
 - Sequenced build plan
 
 **Release Readiness Output:**
-- QA sign-off against defined criteria
+- QA sign-off against defined criteria (for a public or client-facing launch: every [Launch Readiness](launch-readiness.md) item answered with evidence)
 - Rollout strategy
 - Incident response and rollback plan
 - Post-launch measurement plan

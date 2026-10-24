@@ -343,7 +343,7 @@ The orchestrator must infer the product mode at mission intake and adjust accord
 
 ### Rollout Mode
 **Trigger:** Build is complete; the product or feature is approaching release  
-**Orchestration style:** Plan crew: QA + Ops + Product + CX. Assess release readiness against defined criteria. Confirm rollout strategy. Ensure Ops and CX are ready before go-live.  
+**Orchestration style:** Plan crew: QA + Ops + Product + CX. Assess release readiness against defined criteria; for a first public deploy or client-facing web release those criteria include the [Launch Readiness](../playbooks/launch-readiness.md) checklist. Confirm rollout strategy. Ensure Ops and CX are ready before go-live.  
 **Output emphasis:** Key Facts and Signal (readiness assessment), Recommendation (ship / delay / partial rollout), Immediate Next Moves, Risks to Monitor
 
 ### Diagnosis Mode

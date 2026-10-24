@@ -210,6 +210,28 @@ policy:
       classification: [prod_touching, client_facing]
       require_verdict: true
       allowed_verifiers: [Reid, Quinn]
+    # 1.0.0: while any rule above still holds a __REPLACE_ME__ glob,
+    # `tessctl doctor` warns that the ship gate reviews none of your app code,
+    # and `tessctl launch mark-launched` refuses. How to set it:
+    # docs/LAUNCH_READINESS.md, section 2.
+    #
+    # Example for a project whose data rules live in a backend-as-a-service
+    # (row-level security, storage rules). Uncomment and adjust the globs so
+    # every change to them needs a signed Cyra verdict:
+    #
+    # - id: data-access-rules
+    #   description: >-
+    #     Row-level security policies and storage rules: a change here can
+    #     expose every row to anyone holding the public key.
+    #   globs:
+    #     - "supabase/migrations/**"
+    #     - "supabase/config.toml"
+    #     - "firestore.rules"
+    #     - "storage.rules"
+    #     - "database.rules.json"
+    #   classification: [prod_touching]
+    #   require_verdict: true
+    #   allowed_verifiers: [Cyra]
 
   # verifier_keys — Phase 2b's ALLOWED-KEY SET (core/contracts/policy.schema.json
   # $defs.VerifierKeyEntry). Hand-authored per project, never fabricated. The

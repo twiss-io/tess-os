@@ -17,7 +17,7 @@ framework:
   upstream_digest: null
   trusted_key_fingerprint: EBEABC618C11B6A7340A7D1601DD637667B8CC89
   trusted_ssh_key_fingerprint: SHA256:2G0Xp5X+54NdmGbIOBhWicNlhU/Law9WpWisuAitBoI
-  last_updated: '2026-10-24T13:57:06.799544Z'
+  last_updated: '2026-10-24T17:13:27.345835Z'
 files:
   .tess/core/MANIFEST.md:
     status: core-managed
@@ -4534,7 +4534,7 @@ files:
   .tess/core/conductor/release-process.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:07f06ca9fe34c2b590d193b31f6fd568e8bfc86a6f06aaf38d6475ea3c4a3ec1
+    base_sha: sha256:f252fd341010fbfe54dd6913f44314a7f962a4c148202500be786140270a9ce4
     live_path: conductor/release-process.md
     last_updated: '2026-06-29T02:22:00.000000Z'
   .tess/core/conductor/verdict-signing.md:
@@ -4671,7 +4671,7 @@ files:
   .tess/core/conductor/outcome-orchestrators/product-delivery-orchestrator.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:35c90ffc5fbf4d64f72a16b6ea43167447f5b0a47ed9e65d33c9391473dbc733
+    base_sha: sha256:e63dbd96b54289689412168d5a0e6a7018814bc046c4d6dba31253562d37479a
     live_path: conductor/outcome-orchestrators/product-delivery-orchestrator.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/conductor/outcome-orchestrators/revenue-orchestrator.md:
@@ -4701,7 +4701,7 @@ files:
   .tess/core/conductor/playbooks/README.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:be53f7a38083bda383ffd97a739246764ccb1078010c830485eb4ffea58a59ec
+    base_sha: sha256:4c68e47c6de1b48fdafa90993f158b695932d81c24bdb2d2131c852446b223b7
     live_path: conductor/playbooks/README.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/conductor/playbooks/event-launch-orchestration.md:
@@ -4728,10 +4728,16 @@ files:
     base_sha: sha256:f38de41310b1949ae6981831f4751615e016e5c3e2f25bbd5612355c78a3de46
     live_path: conductor/playbooks/l99-merge-discipline.md
     last_updated: 2026-06-27 10:00:00+00:00
+  .tess/core/conductor/playbooks/launch-readiness.md:
+    status: core-managed
+    tier: normal
+    base_sha: sha256:758e1c17c269df07114a2c81a43ec823e9c9ce6b48d4540576d93ad2f4731c79
+    live_path: conductor/playbooks/launch-readiness.md
+    last_updated: 2026-10-25 00:00:00+00:00
   .tess/core/conductor/playbooks/product-build-mission.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:24e5ae2d1a40e49f652cc18fc724d008e130244bb40ba633e55f277bdeb8b099
+    base_sha: sha256:8fa2f28acc2da855b0a8538f45addbdad7f7573ce427de4d12d0c6eb34818c65
     live_path: conductor/playbooks/product-build-mission.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/conductor/playbooks/revenue-diagnosis.md:
@@ -4767,7 +4773,7 @@ files:
   .tess/core/conductor/verification-routing.md:
     status: core-managed
     tier: security
-    base_sha: sha256:e13c4a2d54a04de580117be98ad3817eebaea4cdd23b99fe4f9df997baf4cc70
+    base_sha: sha256:8780d091c9b92699e3a8e9174f2c7a986ef4f70dc1e893a626029eefa1d3c252
     live_path: conductor/verification-routing.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/conductor/lenses/README.md:
@@ -6083,7 +6089,7 @@ files:
   .tess/core/policy/policy.yaml:
     status: core-managed
     tier: security
-    base_sha: sha256:cf90a430f7a72a88de21488346104e8a527c7dd139fa0f213821c9109c5e1194
+    base_sha: sha256:35df42bd7c0b340a7a358fa387149f99d4509aff8f8fb4a2921a84cfbf004ed8
     live_path: core/policy/policy.yaml
     last_updated: '2026-09-28T17:49:44.108190Z'
   .tess/core/contracts/task.schema.json:
