@@ -6227,12 +6227,14 @@ def _find_protected(root: Path, cwd: str, starts: list, expr: list, v: "Verdict"
                         # 1.0.x (Reid E2): a folder Tess cannot list may hold
                         # protected paths; "could not look" is not "nothing
                         # there". A start that is missing, or is a file, is not.
+                        # 1.0.0 (Reid N1): with -maxdepth 0 find lists only the
+                        # start itself, so nothing under it is walked or counted.
                         unlisted = []
 
                         def _walk_error(e, _u=unlisted):
                             if not isinstance(e, (FileNotFoundError, NotADirectoryError)):
                                 _u.append(e)
-                        for dirpath, dirnames, filenames in ([] if pruned(top, start, 0)
+                        for dirpath, dirnames, filenames in ([] if maxdepth == 0 or pruned(top, start, 0)
                                                              else os.walk(top, onerror=_walk_error)):
                             rel = os.path.relpath(dirpath, top)
                             d = 0 if rel == "." else rel.count(os.sep) + 1

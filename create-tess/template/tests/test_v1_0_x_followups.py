@@ -74,6 +74,23 @@ def test_e2_neighbours_are_unchanged(proj, locked):  # noqa: F811
     assert _all(proj, "find e2zone -name '*.tmp'") == ALLOW  # changes nothing
 
 
+@needs_perms
+def test_n1_maxdepth_0_on_an_unreadable_start_is_not_walked(proj, locked):  # noqa: F811
+    # 1.0.0 (Reid N1, approved toward-allow): find never lists below a
+    # -maxdepth 0 start, so Tess does not try to list it either.
+    assert _all(proj, "find e2zone/locked -maxdepth 0 -delete") == ALLOW
+    assert _all(proj, "find e2zone/locked -maxdepth 0 -exec rm -rf {} +") == ALLOW
+
+
+@needs_perms
+def test_n1_neighbours_still_fail_safe(proj, locked):  # noqa: F811
+    assert _all(proj, "find e2zone/locked -delete") == ASK  # walked: cannot list it
+    assert _all(proj, "find e2zone/locked -maxdepth 1 -delete") == ASK
+    assert _all(proj, "find e2zone -maxdepth 2 -delete") == ASK  # reaches the locked folder
+    assert _all(proj, "find .claude -maxdepth 0 -delete") == DENY  # the start itself still counts
+    assert _all(proj, "find .tess -maxdepth 0 -exec rm -rf {} +") == DENY
+
+
 # ====================================================================== E3
 @pytest.fixture
 def E3(proj, tmp_path):  # noqa: F811
