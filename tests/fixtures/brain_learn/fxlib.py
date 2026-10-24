@@ -52,11 +52,17 @@ CODEX_HOME = os.path.join(HERE, "codexhome")
 CODEX_CWD = "/tmp/tess-brain-fx"
 
 
-def cli(root, *args, stdin=None, env=None, timeout=120):
-    """Run tessbrain.py against an instance root; returns CompletedProcess."""
+def cli(root, *args, stdin=None, env=None, timeout=120, witness=True):
+    """Run tessbrain.py against an instance root; returns CompletedProcess.
+
+    1.0.x (B-1): a transcript home named only in a command's environment is not trusted until the
+    operator confirms it at a real terminal (stores.json). The fixture folders this helper makes a
+    runtime's home are recorded as that confirmation would record them (witness_home); a home the
+    caller passes in `env` is recorded too unless witness=False, which tests use to play an agent that
+    names a folder only in its own shell."""
     e = dict(os.environ)
     e.setdefault("TESS_BRAIN_NO_BACKFILL", "1")
-    none = os.path.join(str(root), ".no-such-home")  # hermetic: never sweep the real ~/.codex or ~/.gemini
+    none = os.path.realpath(str(root)) + ".no-such-home"  # hermetic, and outside the instance: never sweep the real ~/.codex or ~/.gemini
     e.setdefault("CODEX_HOME", none)
     e.setdefault("GEMINI_CLI_HOME", none)
     e.setdefault("CLAUDE_CONFIG_DIR", none)
@@ -69,8 +75,34 @@ def cli(root, *args, stdin=None, env=None, timeout=120):
     for opt, var in (("--codex-home", "CODEX_HOME"), ("--gemini-home", "GEMINI_CLI_HOME")):
         if opt in args and var not in (env or {}):
             e[var] = args[args.index(opt) + 1]
+    helper = {var for opt, var in (("--claude-dir", "CLAUDE_CONFIG_DIR"), ("--codex-home", "CODEX_HOME"),
+                                   ("--gemini-home", "GEMINI_CLI_HOME")) if opt in args and var not in (env or {})}
+    for var, rt in (("CLAUDE_CONFIG_DIR", "claude"), ("CODEX_HOME", "codex"), ("GEMINI_CLI_HOME", "gemini")):
+        if var in helper or (witness and var in (env or {})):
+            witness_home(root, rt, e[var], e)
     return subprocess.run([sys.executable, TESSBRAIN, "--root", str(root)] + args,
                           input=stdin, capture_output=True, text=True, env=e, timeout=timeout)
+
+
+def witness_home(root, runtime, home, env=None):
+    """What the operator's "yes" at a terminal records for a moved runtime home
+    (commands._operator_trusts_env_homes), written in-process into the per-project state outside the
+    instance (TESS_BRAIN_PROVENANCE_DIR)."""
+    sys.path.insert(0, os.path.join(REPO, "scripts", "brain"))
+    from brainlib import sync
+    from brainlib.config import Config
+    key = (env or os.environ).get("TESS_BRAIN_PROVENANCE_DIR")
+    old = os.environ.get("TESS_BRAIN_PROVENANCE_DIR")
+    if key:
+        os.environ["TESS_BRAIN_PROVENANCE_DIR"] = key
+    try:
+        sync.record_home(Config(root), runtime, home)
+    finally:
+        if key:
+            if old is None:
+                os.environ.pop("TESS_BRAIN_PROVENANCE_DIR", None)
+            else:
+                os.environ["TESS_BRAIN_PROVENANCE_DIR"] = old
 
 
 def claude_store_for(root, claude_dir):
@@ -140,7 +172,7 @@ def claude_session(path, sid, turns, start_minute=0, cwd="/work/fx"):
 
 def sync_dir(root, claude_dir, *extra, env=None):
     """sync against one Claude transcript dir, with no Codex/Gemini sweep."""
-    none = os.path.join(str(root), ".no-such-home")
+    none = os.path.realpath(str(root)) + ".no-such-home"  # outside the instance: a home is never inside it
     return cli(root, "sync", "--claude-dir", str(claude_dir), "--codex-home", none, "--gemini-home", none,
                *extra, env=env)
 

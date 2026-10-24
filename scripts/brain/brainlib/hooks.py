@@ -109,16 +109,24 @@ def automation_reason(runtime: str, data: Dict) -> str:
     a runtime an agent started from its own shell send prompts a program or an agent chose. Signals: Claude
     Code's entrypoint for this process, the session's own transcript markers (parsers), and a runtime
     running inside another runtime's session (process ancestry)."""
-    ep = os.environ.get("CLAUDE_CODE_ENTRYPOINT", "").strip()
-    if runtime == "claude" and ep.startswith("sdk"):
-        return "Claude Code entrypoint %s (claude -p or the Agent SDK)" % ep
-    path = str(data.get("transcript_path") or "")
-    if path and os.path.isfile(path):
-        from .parsers import transcript_automation
-        why = transcript_automation(runtime, path)
-        if why:
-            return why
-    return nested_runtime()
+    try:
+        ep = os.environ.get("CLAUDE_CODE_ENTRYPOINT", "").strip()
+        if runtime == "claude" and ep.startswith("sdk"):
+            return "Claude Code entrypoint %s (claude -p or the Agent SDK)" % ep
+        path = str(data.get("transcript_path") or "")
+        if path and os.path.isfile(path):
+            from .parsers import transcript_automation
+            why = transcript_automation(runtime, path)
+            if why:
+                return why
+        # 1.0.x (fail closed): a turn counts as the operator's only when every check could run.
+        # No process ancestry (no `ps`, or no parent found) is not proof of a top-level session.
+        names = _ancestry()
+        if not names:
+            return "the hook could not read its process ancestry, so it cannot rule out automation"
+        return nested_runtime(names)
+    except Exception as exc:  # noqa: BLE001 - an automation check that failed proves nothing
+        return "the automation check failed (%s)" % type(exc).__name__
 
 
 def _mark_automation(cfg: Config, runtime: str, data: Dict, why: str) -> None:
@@ -164,7 +172,10 @@ def session_start(cfg: Config, runtime: str, data: Dict) -> None:
 
 
 def prompt(cfg: Config, runtime: str, data: Dict) -> None:
-    text = str(data.get("prompt") or "")
+    raw = data.get("prompt")
+    if not isinstance(raw, str):  # 1.0.x (fail closed): only a prompt string is a typed turn
+        return
+    text = raw
     if not text.strip() or _INJECTED.search(text):  # plugin-injected text is not the operator typing
         return
     why = automation_reason(runtime, data)

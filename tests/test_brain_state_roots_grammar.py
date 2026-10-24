@@ -173,7 +173,7 @@ def _brain_json_with(tmp_path, also):
 
 def test_r6_repo_also_cwd_slash_pulls_in_no_foreign_transcripts(tmp_path):
     inst = Path(fxlib.make(str(tmp_path / "fx"), brain_json=_brain_json_with(tmp_path, ["/"])))
-    none = str(inst / ".no-such-home")
+    none = str(inst) + ".no-such-home"  # 1.0.x (B-1): a runtime home is never inside the instance
     r = fxlib.cli(inst, "sync", "--claude-dir", none, "--codex-home", fxlib.CODEX_HOME, "--gemini-home", none)
     assert r.returncode in (0, 3), r.stdout + r.stderr
     assert _codex_journals(inst) == []
@@ -218,7 +218,7 @@ def test_r6_a_root_added_at_a_real_terminal_is_honoured_and_bad_roots_are_refuse
     home = tmp_path.resolve()
     old = home / "old-place" / "fx"
     codex_home = _moved_codex_home(tmp_path, old)
-    none = str(inst / ".no-such-home")
+    none = str(inst) + ".no-such-home"  # 1.0.x (B-1): a runtime home is never inside the instance
     sync = ["sync", "--claude-dir", none, "--codex-home", codex_home, "--gemini-home", none]
     assert fxlib.cli(inst, *sync).returncode in (0, 3) and _codex_journals(inst) == []  # not ours by default
     r = fxlib.cli(inst, "roots", "add", str(old), stdin="yes\n", env={"HOME": str(home)})

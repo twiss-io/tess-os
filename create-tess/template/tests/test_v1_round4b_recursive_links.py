@@ -15,8 +15,9 @@ Z1  zsh recursive glob steps and links. Measured on zsh 5.9: a plain `**/`
     on 629f63d, and the real shell writes the protected file.
 E1  A function call's argument with several fields: a listing cut short on
     any field (not only the last) makes the positional parameters unknown.
-U3  An array assignment after `then`, `do`, `{` (and in a function body)
-    no longer reads as a `(` in a command's arguments. Nothing else moves.
+U3  An array assignment after `{`, `!`, `if`, `then`, `else`, `elif`, `do`,
+    `while`, `until` (and in a function body) no longer reads as a `(` in a
+    command's arguments. Nothing else moves.
 
 Decisions: (claude default, claude acceptEdits, codex). @W is a folder
 outside the project holding links at depth 2 and 3 to the project's
@@ -225,6 +226,12 @@ U3 = [
     ("function-body-local-array", "f() { local x=(1 2); echo $x; }; f", ALLOW),
     ("else-array", "if false; then :; else arr=(a); fi", ALLOW),
     ("while-body-array", "while false; do arr+=(a); done", ALLOW),
+    # 1.0.x (Reid D4): the rest of the lead words U3 skips, each documented
+    ("if-condition-array", "if arr=(a b); then :; fi", ALLOW),
+    ("elif-condition-array", "if false; then :; elif arr=(a); then :; fi", ALLOW),
+    ("while-condition-array", "while arr=(a); do break; done", ALLOW),
+    ("until-condition-array", "until arr=(a); do :; done", ALLOW),
+    ("bang-array", "! arr=(a b); echo ok", ALLOW),
 ]
 # Still a `(` in a command's arguments after the same reserved words.
 U3_STILL = [
@@ -232,6 +239,10 @@ U3_STILL = [
     ("brace-argument-paren", "{ ls *(e:x:); }", ASK),
     ("do-argument-paren", "for i in 1; do rm -f @P/(CLAUDE|x).md; done", ASK),
     ("then-command-then-array", "if true; then echo arr=(a); fi", ASK),
+    # 1.0.x (Reid D4): the extra lead words keep the plain-position decision
+    ("if-condition-argument-paren", "if ls *(e:x:); then :; fi", ASK),
+    ("bang-argument-paren", "! ls *(e:x:)", ASK),
+    ("while-condition-substitution-array", "while arr=($(cat x)); do break; done", ASK),
 ]
 
 

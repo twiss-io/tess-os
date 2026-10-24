@@ -22,6 +22,9 @@ import sys
 from pathlib import Path
 
 sys.dont_write_bytecode = True  # never leave __pycache__/ in a brain repo's working tree
+# 1.0.x: never write bytecode under scripts/brain (a protected folder). An allowed brain command
+# (`tessbrain.py status`, ...) must change no protected file (real-shell conformance harness).
+sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from oobe import answers, apply, chart, convert, entities, hook, records, restore, scaffold, state  # noqa: E402

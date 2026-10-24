@@ -35,8 +35,12 @@ def project_slug(path: str) -> str:
     return re.sub(r"[^A-Za-z0-9]", "-", path)
 
 
-def default_dirs(root: Path) -> List[Path]:
-    base = Path(os.environ.get("CLAUDE_CONFIG_DIR") or (Path.home() / ".claude")) / "projects"
+def default_dirs(root: Path, base: Optional[Path] = None) -> List[Path]:
+    """<store>/<slug> for the instance path and its real path. `base` is a Claude transcript store
+    (<home>/projects); without it, the one this process's environment names (status display only:
+    sync passes the trusted stores, 1.0.x B-1)."""
+    if base is None:
+        base = Path(os.environ.get("CLAUDE_CONFIG_DIR") or (Path.home() / ".claude")) / "projects"
     seen: List[Path] = []
     for p in (str(root), os.path.realpath(str(root))):
         d = base / project_slug(p)
@@ -183,10 +187,10 @@ def _inside(cwd: str, root: Path) -> bool:
     return bool(c) and (c == r or c.startswith(r + os.sep))
 
 
-def subdir_transcripts(root: Path) -> List[Path]:
+def subdir_transcripts(root: Path, base: Optional[Path] = None) -> List[Path]:
     """Sessions started in a SUBDIRECTORY of the instance (`cd clients/acme && claude`):
     their slug is <slug(root)>-..., so keep only those whose recorded cwd is inside root."""
-    base = default_dirs(root)[0].parent
+    base = default_dirs(root, base)[0].parent
     out: List[Path] = []
     for p in {project_slug(str(root)), project_slug(os.path.realpath(str(root)))}:
         for d in sorted(base.glob(p + "-*")) if base.is_dir() else []:
@@ -195,16 +199,19 @@ def subdir_transcripts(root: Path) -> List[Path]:
     return out
 
 
-def discover(root: Path, claude_dir: Optional[Path], known: List[str]) -> List[Path]:
+def discover(root: Path, claude_dir: Optional[Path], known: List[str],
+             bases: Optional[List[Path]] = None) -> List[Path]:
     """Transcripts for this project: a given dir, the project slug dirs (root and
-    subdirectories), hook-reported paths."""
-    dirs = [Path(claude_dir)] if claude_dir else default_dirs(root)
+    subdirectories) in each store of `bases` (default: the environment's), hook-reported paths."""
+    stores = [None] if bases is None else list(bases)
+    dirs = [Path(claude_dir)] if claude_dir else [d for b in stores for d in default_dirs(root, b)]
     found: List[Path] = []
     for d in dirs:
         if d.is_dir():
-            found.extend(sorted(p for p in d.glob("*.jsonl") if p.is_file()))
+            found.extend(p for p in sorted(d.glob("*.jsonl")) if p.is_file() and p not in found)
     if not claude_dir:
-        found.extend(p for p in subdir_transcripts(root) if p not in found)
+        for b in stores:
+            found.extend(p for p in subdir_transcripts(root, b) if p not in found)
     for k in known:
         p = Path(k)
         if p.suffix == ".jsonl" and p.is_file() and p not in found:

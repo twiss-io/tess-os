@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 from typing import Dict, List, Tuple
 
 from . import (claims, confirm, githooks, hooks, inbox, index, lint, promote, recall, records, save, status, sync, verify)
@@ -38,6 +39,13 @@ def cmd_sync(cfg: Config, a) -> Out:
             return 1, {"error": "refused: %s. Only you, at a terminal outside Claude Code and Codex, can journal "
                                 "another folder of conversations as your own words; an agent or a pipe cannot"
                                 % homes}
+    if ok and homes:
+        # 1.0.x (B-1): a Codex or Gemini home the operator confirmed here is theirs from now on, as one a
+        # runtime hook saw is (stores.json, outside the repo). A --claude-dir stays a one-off.
+        for rt, h in (("codex", a.codex_home), ("gemini", a.gemini_home)):
+            if h and sync.home_problem(cfg, h if rt == "codex" else None, h if rt == "gemini" else None):
+                sync.record_home(cfg, rt, h)
+    _operator_trusts_env_homes(cfg, a.runtime)
     res = sync.run(cfg, a.runtime, a.claude_dir, a.codex_home, a.transcript, a.days, wait=not a.no_wait,
                    gemini_home=a.gemini_home, claude_dir_confirmed=ok and bool(why),
                    homes_confirmed=ok and bool(homes))
@@ -45,6 +53,31 @@ def cmd_sync(cfg: Config, a) -> Out:
         return 1, res
     over = any(o.get("status") == inbox.OVER_CAP for o in res.get("outcomes", [])) if isinstance(res, dict) else False
     return (3 if over else (res.get("index", {}).get("rc", 0) if isinstance(res, dict) else 0)), res
+
+
+def _operator_trusts_env_homes(cfg: Config, runtime: str) -> None:
+    """1.0.x (B-1): a runtime home this process's environment moves (CLAUDE_CONFIG_DIR, CODEX_HOME,
+    GEMINI_CLI_HOME) is trusted only once the operator says so here, at a real terminal outside Claude
+    Code and Codex (the bar of `roots add`); it is then kept in stores.json outside the repo. Anywhere
+    else (a hook, an agent, a pipe) nothing is asked and nothing is recorded: the home is not used."""
+    import sys
+    from .roots import agent_session_marker
+    if agent_session_marker() or not (sys.stdin.isatty() and sys.stdout.isatty()):
+        return
+    for rt in ("claude", "codex", "gemini"):
+        if runtime not in ("all", rt):
+            continue
+        home = sync.env_home(rt)
+        if not os.environ.get(sync.STORE_ENV[rt]) or sync._home_trusted(cfg, rt, home):
+            continue
+        print("%s names %s as your %s home. Trusting it journals the conversations in %s into THIS "
+              "brain (%s) as your own words, now and in later syncs."
+              % (sync.STORE_ENV[rt], home, rt, sync.store_of(rt, home), cfg.root))
+        try:
+            if input('Type "yes" to trust it: ').strip().lower() == "yes":
+                sync.record_home(cfg, rt, str(home))
+        except EOFError:
+            return
 
 
 def _operator_allows_claude_dir(cfg: Config, path: str, why: str) -> bool:

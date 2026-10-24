@@ -1668,6 +1668,11 @@ ADVICE = {
     "rollback": "Protected Tess files come back only from HEAD (`git restore --source=HEAD -- "
                 "<path>`) or through a reviewed release (`./tessctl update`). To check out an "
                 "older copy on purpose, run the git command yourself outside the agent.",
+    "brainhook": "Claude Code and Codex run the brain's hooks themselves; there is nothing to run "
+                 "by hand. To record something you said, use `tessbrain.py decide` or `remember`.",
+    "brainstore": "Run brain commands with the runtime's normal transcript folder. A moved folder "
+                  "counts once that runtime's own hook has run with it, or once you confirm it "
+                  "at your own terminal.",
     "envhome": "Run git and tessctl with your normal HOME and XDG_CONFIG_HOME; Tess finds the "
                "operator's key directory from the OS user record either way.",
     "vault": "The raw value stays out of this session (conductor/vault.md). Pass the ref to a "
@@ -4544,6 +4549,12 @@ def _link_may_redirect(root: Path, cwd: str | None, word, ctx: "_Ctx | None") ->
                                 if budget[0] < 0:
                                     return True
                                 dn[:] = [d for d in dn if not d.startswith(".")]
+                                # 1.0.x (Reid E4): a link to a file, or a dangling
+                                # one, is listed with the files, not the folders.
+                                if "***" in seg and any(
+                                        os.path.islink(os.path.join(dp, f))
+                                        for f in fn if not f.startswith(".")):
+                                    return True
                                 for d in list(dn):
                                     _tick()  # E8: budget check per iteration
                                     q = os.path.join(dp, d)
@@ -6213,7 +6224,16 @@ def _find_protected(root: Path, cwd: str, starts: list, expr: list, v: "Verdict"
                             entries = [(top, start, 0)] + entries
                     if entries is None:
                         entries = [(top, start, 0)]
-                        for dirpath, dirnames, filenames in ([] if pruned(top, start, 0) else os.walk(top)):
+                        # 1.0.x (Reid E2): a folder Tess cannot list may hold
+                        # protected paths; "could not look" is not "nothing
+                        # there". A start that is missing, or is a file, is not.
+                        unlisted = []
+
+                        def _walk_error(e, _u=unlisted):
+                            if not isinstance(e, (FileNotFoundError, NotADirectoryError)):
+                                _u.append(e)
+                        for dirpath, dirnames, filenames in ([] if pruned(top, start, 0)
+                                                             else os.walk(top, onerror=_walk_error)):
                             rel = os.path.relpath(dirpath, top)
                             d = 0 if rel == "." else rel.count(os.sep) + 1
                             if maxdepth is not None and d + 1 > maxdepth:
@@ -6229,7 +6249,12 @@ def _find_protected(root: Path, cwd: str, starts: list, expr: list, v: "Verdict"
                                 v.add(ASK, "`find` would change more files than Tess can list, so it cannot "
                                            "check them against its protected files")
                                 return
+                            if maxdepth is not None and d + 2 > maxdepth:
+                                dirnames[:] = []  # find never lists below here (E2: nor does Tess)
                             _tick()
+                        if unlisted:
+                            v.add(ASK, f"`find` changes files under {start}, which holds a folder Tess "
+                                       "cannot list, so it cannot check them against its protected files")
                     for path, shown, d in entries:
                         _tick()  # E8: budget check per iteration
                         if d < mindepth or (maxdepth is not None and d > maxdepth) or not changed(path, shown, d):
@@ -6302,6 +6327,169 @@ def _check_interpreter(root: Path, cwd: str, argv: list, v: Verdict, raw: str):
 
 _HOME_ENV = ("HOME", "XDG_CONFIG_HOME")
 _KEY_TOOLS = re.compile(r"(?<![\w.-])(git|tessctl|tessbrain(\.py)?)(?![\w-])")
+# 1.0.x (Cyra B-1, B-2): the brain's capture surface. Policy: input an agent
+# controls must never make the brain journal transcript lines as the
+# operator's words. Two things on a command line can do that: running the
+# brain's hook handler (it trusts its caller), and moving the folder the brain
+# takes as a runtime's own transcript store. The decision does NOT depend on
+# a list of interpreters, flags or spellings that run code:
+#   * DENY what the gate can parse as such: a word naming the brain's
+#     scripts followed by the literal `hook` subcommand, under ANY program;
+#     a store variable moved for a command that names the brain.
+#   * ASK (Codex: refuse) whenever the gate cannot show the command leaves
+#     that surface alone: every word a program receives (inline code of any
+#     interpreter, known or not, a heredoc or here-string it reads, an
+#     argument to xargs, find -exec, sh -c, ...) is read as text, and a
+#     mention of the brain's code or of a store variable asks, unless the
+#     program is one that only reads or prints (_BRAIN_TEXT_ONLY, a fixed
+#     allowlist: anything not on it asks) or the brain CLI itself with a
+#     literal subcommand other than `hook`.
+# The text is matched after dropping quotes, backslashes, `+`, `.` joins and
+# white space, so a name split across string pieces still counts. Code the
+# command does not contain (a script file, a module it imports, a program's
+# output piped in) is not visible to the gate; SECURITY.md states that limit.
+_BRAIN_STORE_ENV = ("CLAUDE_CONFIG_DIR", "CODEX_HOME", "GEMINI_CLI_HOME")
+_BRAIN_SCRIPTS = ("tessbrain", "tessbrain.py", "onboard.py")
+_BRAIN_CODE = re.compile(r"tessbrain|brainlib|onboard(?:\.py|py)|oobe(?:/|\.|)hook")
+_BRAIN_ENV_TEXT = re.compile(r"claude_?config_?dir|codex_?home|gemini_?cli_?home")
+_BRAIN_SQUEEZE = re.compile(r"[\s'\"\\+`]+|\$'|\.\.")
+# Programs that only read, list or print their operands; never run them.
+_BRAIN_TEXT_ONLY = {"echo", "printf", "true", "false", ":", "pwd", "ls", "cat", "test", "[",
+                    "grep", "egrep", "fgrep", "head", "tail", "wc", "stat", "which", "type",
+                    "diff", "cmp", "cut", "tr", "uniq", "basename", "dirname", "realpath",
+                    "readlink", "shasum", "sha256sum", "sha1sum", "md5", "md5sum", "cd", "sleep",
+                    "date"}
+_BRAIN_HOOK_DENY = ("it runs the brain's hook handler from an agent's shell. Only Claude Code and "
+                    "Codex run that handler, as a hook; run by an agent, it would record words the "
+                    "agent wrote as yours")
+_BRAIN_TEXT_ASK = ("it hands {what} to {prog}, and Tess cannot tell whether that runs the brain's "
+                   "hook handler or moves the folder the brain reads your conversations from")
+
+
+def _brain_squeeze(text: str) -> str:
+    return _BRAIN_SQUEEZE.sub("", str(text).lower())
+
+
+def _brain_cli_sub(words: list, i: int):
+    """(subcommand word, its index) after the brain script at words[i], skipping
+    the global options; (None, None) when there is none."""
+    j = i + 1
+    while j < len(words):
+        _tick()
+        a = str(words[j])
+        if a in ("--root", "--roo", "--ro"):
+            j += 2
+            continue
+        if a.startswith("-"):
+            j += 1
+            continue
+        return a, j
+    return None, None
+
+
+def _brain_names(text: str) -> list:
+    """What `text` names of the brain's capture surface (after _brain_squeeze)."""
+    sq = _brain_squeeze(text)
+    out = []
+    if _BRAIN_CODE.search(sq):
+        out.append("text naming the brain's code")
+    if _BRAIN_ENV_TEXT.search(sq):
+        out.append("text naming a transcript-folder variable")
+    return out
+
+
+def _brain_store_text(cmd: str) -> list:
+    """Store variables a whole command names other than by reading them
+    (`$NAME`, `${NAME}`). Any other spelling (an assignment, a prefix, `export`,
+    `read`, `printf -v`, `${NAME:=x}`, a name inside inline code or a string)
+    may set it, so the caller asks. Matched case-blind, across quotes and `+`."""
+    sq = _brain_squeeze(cmd)
+    sq = re.sub(r"\$\{(claude_?config_?dir|codex_?home|gemini_?cli_?home)\}"
+                r"|\$(claude_?config_?dir|codex_?home|gemini_?cli_?home)(?![\w=])", " ", sq)
+    return sorted({m.group(0) for m in _BRAIN_ENV_TEXT.finditer(sq)})
+
+
+def _brain_cli_ok(root: Path, cwd, argv: list, words: list, name: str) -> bool:
+    """True only for the brain CLI itself, run plainly: the project's own
+    scripts/brain/<script> as the program, as an interpreter's first operand
+    (interpreter flags limited to -I -B -u -E -s -S), or behind the pinned
+    launcher; a literal subcommand other than `hook`; nothing after it only
+    known at run time. Anything else is read as text (_check_brain_surface)."""
+    def own(w):
+        if os.path.basename(w).lower() not in _BRAIN_SCRIPTS or _dynamic(w) or _expands(w):
+            return False
+        real = os.path.realpath(os.path.join(cwd or str(root), w))
+        return os.path.dirname(real) == os.path.realpath(str(root / "scripts" / "brain"))
+    if not words:
+        return False
+    if own(words[0]):
+        i = 0
+    elif INTERPRETERS.match(name) and name.startswith("python"):
+        j = 1
+        while j < len(words) and words[j] in ("-I", "-B", "-u", "-E", "-s", "-S", "-IB", "-BI"):
+            _tick()
+            j += 1
+        if j >= len(words):
+            return False
+        if own(words[j]):
+            i = j
+        elif os.path.realpath(os.path.join(cwd or str(root), words[j])) == \
+                os.path.realpath(str(root / LAUNCHER_REL)) and "--" in words[j:]:
+            k = words.index("--", j) + 1
+            if k >= len(words) or not own(words[k]):
+                return False
+            i = k
+        else:
+            return False
+    else:
+        return False
+    sub, j = _brain_cli_sub(words, i)
+    if sub is None or sub.lower() == "hook":
+        return False
+    return not any(_dynamic(a) or _expands(a) for a in argv[i + 1:])
+
+
+def _check_brain_surface(root: Path, cwd, env: dict, argv: list, orig, name: str, raw: str,
+                         upstream, v: Verdict) -> None:
+    """1.0.x (Cyra B-1, B-2): see the block comment above. Every exemption
+    here covers the whole segment: its environment prefix, every word, its
+    here-document or here-string and the text piped into it."""
+    words = [str(a) for a in argv]
+    env_text = " ".join(f"{k}={env[k]}" for k in env)
+    names_brain = any(_BRAIN_CODE.search(_brain_squeeze(w)) for w in words + [env_text, raw])
+    # (1) store variables: set for, or by, this segment
+    moved = [k for k in env if k in _BRAIN_STORE_ENV]
+    set_here = [w.partition("=")[0] for w in words[1:] if w.partition("=")[0] in _BRAIN_STORE_ENV] \
+        if name in ("export", "declare", "typeset", "readonly", "local", "setenv") else []
+    if (moved or set_here) and names_brain:
+        v.add(DENY, f"it sets {', '.join(moved + set_here)} in a command that runs the brain; a moved "
+                    "transcript folder would let the agent choose which conversations the brain "
+                    "records as yours", "brainstore")
+    # (2) the brain's own scripts named as a word, under any program
+    for i, w in enumerate(words):
+        _tick()
+        if os.path.basename(w).lower() not in _BRAIN_SCRIPTS:
+            continue
+        sub, j = _brain_cli_sub(words, i)
+        if sub is not None and sub.lower() == "hook":
+            v.add(DENY, _BRAIN_HOOK_DENY, "brainhook")
+    if not env and _brain_cli_ok(root, cwd, argv, words, name):
+        return
+    # (3) everything this segment is handed, read as text, whatever the program
+    src = _stdin_source(orig) if orig is not None else None
+    texts = words + [env_text] + ([str(src[1])] if src and src[0] in ("heredoc", "herestring") else [])
+    piped = []
+    if upstream is not None:
+        up = _resolve(upstream).argv
+        piped = [str(a) for a in up] + list(_upstream_words(upstream) or [])
+    plain = (name in _BRAIN_TEXT_ONLY and not env
+             and not (name == "printf" and any(w.startswith("-v") for w in words[1:])))
+    hits = _brain_names(" ".join(texts))
+    if plain:
+        return  # reads or prints its words; text it prints is judged where it is piped
+    hits = sorted(set(hits + _brain_names(" ".join(piped))))
+    if hits:
+        v.add(ASK, _BRAIN_TEXT_ASK.format(what=" and ".join(hits), prog=name or "a program"))
 
 
 def _check_home_env(env: dict, argv: list, raw: str, v: Verdict) -> None:
@@ -6468,6 +6656,15 @@ def _check_extract(root: Path, cwd: str, argv: list, v: Verdict, ctx: "_Ctx | No
         _check_extract_plan(root, cwd, argv, v, ctx, plan)
 
 
+def _glob_dest_spellings(sp, cwd: str) -> list:
+    """Every spelling of an extract destination glob, made absolute.
+
+    1.0.x (Reid E3, N2): every match, by value, and the text as written too
+    when it is itself one of them: a superset of the matches by construction
+    (the caller drops duplicates)."""
+    return [x if os.path.isabs(x) else os.path.join(cwd, x) for x in sp]
+
+
 def _check_extract_plan(root: Path, cwd: str, argv: list, v: Verdict, ctx, plan) -> None:
     dest, archive, odd = plan
     tool = os.path.basename(argv[0])
@@ -6505,7 +6702,7 @@ def _check_extract_plan(root: Path, cwd: str, argv: list, v: Verdict, ctx, plan)
             if sp.truncated:
                 v.add(ASK, f"`{tool}` extracts into {t}, a glob that matches more names than Tess "
                            "lists one by one, so Tess cannot check every one")
-            spelled += [x if os.path.isabs(x) else os.path.join(cwd, x) for x in list(sp)[:-1]]
+            spelled += _glob_dest_spellings(sp, cwd)
     dests = []
     for d in dict.fromkeys(spelled):
         _tick()  # E8: budget check per iteration
@@ -8322,6 +8519,7 @@ def _check_program(root: Path, cwd: str, env: dict, argv: list, orig: list, v: V
         if what:
             v.add(ASK, _INTERACTIVE_ASK.format(what=what))
     _check_home_env(env, argv, raw, v)
+    _check_brain_surface(root, cwd, env, argv, orig, name, raw, upstream, v)
     copier = name if name == "ditto" else _writer_name(name)
     if copier in _COPY_INTO:
         _check_copy_into(root, cwd, copier, argv, v, ctx, res.via_xargs)
@@ -9556,6 +9754,12 @@ def _evaluate(data: dict, root: Path, v: Verdict) -> None:
         if _KEY_TEXT.search(cmd):
             v.add(DENY, "it reads or writes Tess's key directory (~/.config/tess); the signing "
                         "keys there are for the operator's own tools, not for an agent", "keys")
+        named = _brain_store_text(cmd)
+        if named:
+            # 1.0.x (B-1): any spelling that may set a transcript-folder variable asks
+            v.add(ASK, "it names " + ", ".join(n.upper() for n in named) + " other than by reading "
+                       "it, and Tess cannot follow every way that sets it; a moved transcript folder "
+                       "would let the agent choose which conversations the brain records as yours")
         if len(cmd) > MAX_COMMAND:
             v.add(ASK, f"the command is {len(cmd)} characters long, more than Tess checks; split it "
                        "into smaller commands, or run it yourself")

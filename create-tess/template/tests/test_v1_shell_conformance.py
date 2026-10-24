@@ -227,7 +227,7 @@ def test_only_an_exact_restore_snapshot_is_not_counted():
     before = {"CLAUDE.md": ("file", 0o644, "h1"), ".claude": ("dir", 0o755),
               ".claude/settings.json": ("file", 0o644, "h2")}
     good = {".tess/snapshots": ("dir", 0o755), ".tess/snapshots/t1": ("dir", 0o755),
-            ".tess/snapshots/t1/CLAUDE.md": ("file", 0o600, "h1"),
+            ".tess/snapshots/t1/CLAUDE.md": ("file", 0o644, "h1"),
             ".tess/snapshots/t1/.claude": ("dir", 0o755),
             ".tess/snapshots/t1/.claude/settings.json": ("file", 0o644, "h2")}
     after = {**before, **good}
@@ -248,11 +248,13 @@ def test_a_restore_manifest_counts_unless_it_matches_the_project(tmp_path):
     after = {**before, ".tess/snapshots": ("dir", 0o755), ".tess/snapshots/t1": ("dir", 0o755),
              rel: ("file", 0o644, "m")}
     (tmp_path / ".tess/snapshots/t1").mkdir(parents=True)
-    good = {"CLAUDE.md": {"existed": True, "sha256": "sha256:h1"}, "new.md": {"existed": False},
+    good = {"CLAUDE.md": {"existed": True, "sha256": "sha256:h1", "mode": 0o644},
+            "new.md": {"existed": False},
             "lnk": {"existed": True, "is_symlink": True, "link_target": "x"},
             "out": {"out_of_tree": True}}
     for man, ok in ((good, True),
-                    ({**good, "CLAUDE.md": {"existed": True, "sha256": "sha256:EVIL"}}, False),
+                    ({**good, "CLAUDE.md": {"existed": True, "sha256": "sha256:EVIL", "mode": 0o644}},
+                     False),
                     ({**good, "CLAUDE.md": {"existed": False}}, False),  # rollback would delete it
                     ({**good, "lnk": {"existed": True, "is_symlink": True, "link_target": "y"}}, False),
                     ([1], False)):

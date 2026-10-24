@@ -185,5 +185,6 @@ def transcript_automation(runtime: str, path: str) -> str:
     reader = codex.head_automation if runtime == "codex" else claude.head_automation
     try:
         return reader(Path(path))
-    except (OSError, ValueError):
-        return ""
+    except (OSError, ValueError) as exc:
+        # 1.0.x (fail closed): a transcript that cannot be read proves nothing about who typed
+        return "its transcript could not be read (%s)" % type(exc).__name__

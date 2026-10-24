@@ -253,6 +253,10 @@ GIT_WRITE_FILES = (".git/index", ".git/COMMIT_EDITMSG", ".git/ORIG_HEAD", ".git/
 
 
 def _git_normal_write(rel: str, s: "dict | None" = None) -> bool:
+    # 1.0.x (Reid H3): `.git/objects/info/` holds `alternates` and
+    # `http-alternates`, which change where git finds objects; they count.
+    if rel.startswith(".git/objects/info/"):
+        return False
     if rel in GIT_WRITE_FILES or any(rel.startswith(x) for x in GIT_WRITES) or \
             rel in (x.rstrip("/") for x in GIT_WRITES):
         return True
@@ -319,8 +323,9 @@ def _true_snapshot(rel: str, before: dict, after: dict, root: "str | None" = Non
         return new[0] == "dir"
     if parts[1] == "manifest.json":
         return root is not None and _true_manifest(os.path.join(root, rel), before)
+    # 1.0.x (Reid H4): kind, mode and content (tessctl copies with copy2).
     old = before.get(parts[1])
-    return old is not None and old[0] == new[0] and old[-1] == new[-1]
+    return old is not None and old == new
 
 
 def _true_manifest(path: str, before: dict) -> bool:
@@ -349,8 +354,9 @@ def _true_manifest(path: str, before: dict) -> bool:
         elif e.get("is_dir"):
             if old is None or old[0] != "dir":
                 return False
-        elif old is None or old[0] != "file" or e.get("sha256") != "sha256:" + old[-1]:
-            return False
+        elif old is None or old[0] != "file" or e.get("sha256") != "sha256:" + old[-1] \
+                or e.get("mode") != old[1]:
+            return False  # 1.0.x (Reid H4): rollback restores the recorded mode
     return True
 
 

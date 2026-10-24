@@ -17,7 +17,7 @@ framework:
   upstream_digest: null
   trusted_key_fingerprint: EBEABC618C11B6A7340A7D1601DD637667B8CC89
   trusted_ssh_key_fingerprint: SHA256:2G0Xp5X+54NdmGbIOBhWicNlhU/Law9WpWisuAitBoI
-  last_updated: '2026-10-22T05:11:05.493453Z'
+  last_updated: '2026-10-24T09:13:28.734102Z'
 files:
   .tess/core/MANIFEST.md:
     status: core-managed
@@ -5766,7 +5766,7 @@ files:
   .tess/core/templates/agents-md/codex-tess.rules.tpl:
     status: core-managed
     tier: normal
-    base_sha: sha256:858248934e2d187fc75750a98fc3bf01dad0d0af16819fb86834ad320470fee7
+    base_sha: sha256:3c4761a3cb2fe815e942ee76d04fec773a582e5364610d3e32a154975c3d64a4
     live_path: null
     render: template
     last_updated: '2026-09-29T00:00:00Z'
@@ -6101,7 +6101,7 @@ files:
   .tess/core/pinned-scripts.sha256:
     status: core-managed
     tier: security
-    base_sha: sha256:24ac1fbbc2eb0f11b12f4716d507eaeb61f23e4a211e3412fd416fb07dff425b
+    base_sha: sha256:28a95f41579dc143db88ce3b75445eeba7768b556638a84f4f22298d4a19a3ef
     live_path: null
     last_updated: '2026-09-28T17:49:44.108190Z'
   .tess/vendor/README.md:
@@ -6746,7 +6746,7 @@ render_outputs:
   .codex/rules/tess.rules:
     target: codex
     status: rendered
-    rendered_sha: sha256:858248934e2d187fc75750a98fc3bf01dad0d0af16819fb86834ad320470fee7
+    rendered_sha: sha256:3c4761a3cb2fe815e942ee76d04fec773a582e5364610d3e32a154975c3d64a4
   .agents/skills/security-audit/AI-AND-LLM.md:
     target: codex
     status: rendered

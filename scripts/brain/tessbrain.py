@@ -29,6 +29,9 @@ import os
 import sys
 from pathlib import Path
 
+# 1.0.x: never write bytecode under scripts/brain (a protected folder). An allowed brain command
+# (`tessbrain.py status`, ...) must change no protected file (real-shell conformance harness).
+sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from brainlib import commands as C  # noqa: E402

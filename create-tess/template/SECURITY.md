@@ -346,6 +346,7 @@ security reviews; they are stated so nobody relies on a check that is not there.
   input) ask when the target is only known at run time. Every limit the gate
   works within fails safe the same way: a glob listing cut short (more than
   1000 names, more than 20000 entries walked, or a folder it cannot read), a
+  folder `find`'s walk cannot read (1.0.x), a
   chain of links made in the command longer than 8, or more expansions than
   it checks one by one asks (Codex: refuses); none is read as "nothing there".
   A `# comment` is read both ways: as the shell reads it (dropped to the end
@@ -375,17 +376,27 @@ security reviews; they are stated so nobody relies on a check that is not there.
   later step that names a link, such as `**/<link>/...` or `**/l*/...`, enters
   it; bash without `globstar` reads `**` as `*`, which names a link one level
   down), the listing counts as cut short and the command asks (Codex:
-  refuses) (round 4b).
+  refuses) (round 4b). Below a run-time path part, any link under a `***/`
+  step (to a folder, to a file, or dangling) counts as unsure and asks (1.0.x).
   Real-shell conformance (round 4): `tests/test_v1_shell_conformance.py`
   runs every command the gate allows from its attack corpus and from the
   commands the test suite hands it in real bash and zsh, inside a disposable
   sandbox jailed by `sandbox-exec` (macOS) or `bwrap` (Linux), and fails if a
   protected control file changes: anything on the gate's own protected list
-  except the files git itself writes in an allowed commit, branch or tag (its
-  objects, logs, local branch and tag refs, the index, and `HEAD` while it
-  names a local branch), and, in the sandbox home the gate also decides
-  against, the user-level control files and the key folder (round 4b). It
-  runs in CI on both systems. It finds
+  except the files git itself writes in an allowed commit, branch or tag
+  (`.git/objects/` other than `.git/objects/info/`, `.git/logs/`,
+  `.git/refs/heads/`, `.git/refs/tags/`, `.git/index`, `.git/COMMIT_EDITMSG`,
+  `.git/ORIG_HEAD`, `.git/FETCH_HEAD`, and `.git/HEAD` while it names a local
+  branch), and, in the sandbox home the gate also decides against, the
+  user-level control files and the key folder (round 4b). Two sanctioned
+  writers are not counted, each by the gate's or tessctl's own rules: a change
+  to the sandbox home's global git config in which every key added, changed or
+  removed is one the gate allows through `git config --global` in Claude
+  Code's default and acceptEdits modes and in Codex; and a new `tessctl
+  restore` snapshot folder whose every file is an exact copy (kind, mode and
+  content) of the project file it names, and whose manifest matches the
+  project as it was before the run (1.0.x adds the mode). It runs in CI on
+  both systems. It finds
   divergences in the commands it is given; a spelling no corpus holds can
   still differ.
   This is a check when the gate runs, not an OS boundary: a link made after it
@@ -682,26 +693,48 @@ security reviews; they are stated so nobody relies on a check that is not there.
 - **The learning loop authenticates where your words came from; it cannot see
   who typed them.** A line counts as your own words only when a hook, running
   outside the agent's sandbox, took it from the runtime's own transcript store
-  (`~/.claude/projects`, `$CODEX_HOME/sessions`, `~/.gemini/tmp`) and signed it
+  (`~/.claude/projects`, `~/.codex/sessions`, `~/.gemini/tmp`) and signed it
   into the ledger under `~/.config/tess/brain/`. `sync --transcript` accepts
   only files inside that store; `--claude-dir`, `--codex-home` and
   `--gemini-home` with any other folder need you at a terminal typing yes.
-  That terminal check is weaker than it reads in 1.0.0: the store is found
-  from `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `GEMINI_CLI_HOME` and `$HOME` in the
-  environment of the command that runs the sync, and the check compares a
-  folder with that same store. A sync started with one of those variables
-  pointed at another folder therefore journals that folder as your words
-  with no terminal and no question, and the gate does not refuse the three
-  runtime variables (it refuses `HOME` and `TESS_BRAIN_PROVENANCE_DIR`). In
-  the same way, the brain's hook handler (`tessbrain.py hook ...`) trusts
-  whatever its caller sends, so an agent shell outside a sandbox that runs
-  it with a prompt it wrote records that prompt as yours. Until the 1.0.x
-  fix, "the runtime's own transcript store" and "only a hook" hold in a
-  sandboxed shell (the Codex sandbox cannot write the ledger, as below);
-  in Claude Code, which runs commands without a sandbox by default, they
-  rest on Claude Code's own permission prompt for a command that moves
-  those variables or runs the hook handler (Tess pre-approves neither), and
-  a permission mode that does not ask removes them. A
+  The store is the runtime's home under your OS user record
+  (`~/.claude`, `~/.codex`, `~/.gemini` from the user database, never
+  `$HOME`), plus a home that `CLAUDE_CONFIG_DIR`, `CODEX_HOME` or
+  `GEMINI_CLI_HOME` moves only once you confirmed it, typing yes when
+  `tessbrain.py sync` asks at a real terminal outside Claude Code and Codex
+  (a confirmed `--codex-home` / `--gemini-home` counts too). Tess keeps that
+  list in `stores.json` next to the ledger, outside the repo; a list it
+  cannot read, or that is not private to you, trusts nothing. A hook never
+  adds a home: its environment is not proof, since an agent can start a
+  runtime or run the handler with any value. A folder named only in the
+  environment of the command that runs the sync is not journaled and its
+  lines never count as yours. A captured prompt counts as yours only when
+  every automation check ran: a hook that cannot read its process
+  ancestry or the session's transcript, whose check fails, or whose input
+  is not a prompt string records the turn as automation, or not at all.
+  The gate refuses the brain's hook handler (`tessbrain.py hook ...`,
+  `onboard.py hook ...`) under any program it can see run it, and a moved
+  `CLAUDE_CONFIG_DIR`, `CODEX_HOME` or `GEMINI_CLI_HOME` on a command that
+  names the brain, in every permission mode; the Codex rules forbid the
+  handler too. Where the gate cannot show that a command leaves the handler
+  and those variables alone, it asks (Codex: refuses). That rule does not
+  depend on knowing the interpreter: whatever text a program is handed
+  (inline code of any interpreter, a heredoc or here-string, a command
+  string for `sh -c`, `xargs` or `find -exec`, text printed into a pipe) is
+  read, and a mention of the brain's code or of one of those variables asks,
+  unless the program only reads or prints its operands (with no
+  environment prefix), or is the project's own brain CLI run plainly (no
+  environment prefix, no extra interpreter options, nothing only known at
+  run time) with a written-out subcommand other than `hook`. Any spelling
+  that may set one of those variables (a prefix, `export`, `read`,
+  `printf -v`, `${NAME:=...}`, a name inside inline code) asks, whatever the
+  program, Claude Code and Codex included; reading one (`$NAME`) does not.
+  Code the command does not
+  contain (a script file, a module it imports, another program's output) is
+  not visible to the gate; for that, the first bullet above applies. (1.0.0
+  said the store held through the terminal check alone; it did not, since
+  that check compared a folder with the store the same command's
+  environment named.) A
   shell that cannot write the ledger (the Codex sandbox) can read the brain key
   but never mints evidence: captured turns, journal lines and accepted-record
   seals are never taken from the in-repo outbox, a sync there journals nothing
