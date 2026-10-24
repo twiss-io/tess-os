@@ -317,7 +317,12 @@ except ImportError:
     # matches the hashes above. An installed PyYAML always wins when present.
     yaml = _import_vendored_yaml()
 
-class GateError(Exception):
+class TessUserError(Exception):
+    """An error `main()` reports as `tessctl: <message>` with exit status 1,
+    no traceback. Every command-level error class derives from it."""
+
+
+class GateError(TessUserError):
     """Raised by check_manifest_write_gate on any write-gate violation.
 
     Replaces sys.exit() so that BULK callers (_do_restore, _apply_per_file_resolution,
@@ -945,6 +950,13 @@ def load_manifest(root: Path) -> dict:
     return json.loads(mf_path.read_text(encoding="utf-8"))
 
 
+def _norm_components(rel: str) -> list:
+    """Each path component with trailing dots/spaces stripped, then lowercased:
+    the Windows-class fold the write gate's .git, vault and .local.md hard
+    guards compare against ('.GIT.', 'VAULT.AGE ', 'x.LOCAL.MD.')."""
+    return [c.rstrip(". ").lower() for c in Path(rel).parts]
+
+
 def check_manifest_write_gate(root: Path, manifest: dict, live_rel: str, op: str = "write") -> str:
     """
     Manifest write gate (spec §2.4 + C1 security hardening): every live-tree
@@ -1059,11 +1071,11 @@ def check_manifest_write_gate(root: Path, manifest: dict, live_rel: str, op: str
     # writing into .git/ on Windows).  Mirrors the rstrip(". ") approach in the
     # .local.md hard guard below.
     # This handles: .GIT/hooks/x, agents/sub/.git/hooks/y, .git./config, .GIT. etc.
-    _norm_parts_lower = [c.rstrip(". ").lower() for c in Path(norm_rel).parts]
-    if ".git" in _norm_parts_lower:
+    _folded_parts = _norm_components(norm_rel)
+    if ".git" in _folded_parts:
         raise GateError(
             f"tessctl {op}: WRITE REFUSED — {norm_rel!r} contains a '.git' path component "
-            f"(case-insensitive check; parts={_norm_parts_lower!r}). "
+            f"(case-insensitive check; parts={_folded_parts!r}). "
             f"RCE sink: git hooks fire on the same tree tessctl runs in. "
             f"Always denied regardless of owned_globs (C1 defense-in-depth)."
         )
@@ -1091,9 +1103,8 @@ def check_manifest_write_gate(root: Path, manifest: dict, live_rel: str, op: str
     # This is done both via the glob matcher and via a direct extension check on the
     # normalized last component, which handles root-level files (no '/') that
     # '**/*.age' misses.
-    _norm_parts_vault = [c.rstrip(". ").lower() for c in Path(norm_rel).parts]
-    _norm_rel_lower_stripped = "/".join(_norm_parts_vault)
-    _age_by_extension = _norm_parts_vault[-1].endswith(".age") if _norm_parts_vault else False
+    _norm_rel_lower_stripped = "/".join(_folded_parts)
+    _age_by_extension = _folded_parts[-1].endswith(".age") if _folded_parts else False
     _VAULT_SENSITIVE_GLOBS_NORMALIZED = [
         "**/*.age",
         "*.age",
@@ -1124,8 +1135,7 @@ def check_manifest_write_gate(root: Path, manifest: dict, live_rel: str, op: str
     # Normalization: rstrip(". ").lower() per component — same Windows-class poison
     # handling as the .git and vault arms (VAULT.AGE., .GIT., etc.).
     # Only the FINAL path component is checked — *.local.md is a FILE-level guard.
-    _norm_parts_local = [c.rstrip(". ").lower() for c in Path(norm_rel).parts]
-    _final_local = _norm_parts_local[-1] if _norm_parts_local else ""
+    _final_local = _folded_parts[-1] if _folded_parts else ""
     if _final_local.endswith(".local.md"):
         raise GateError(
             f"tessctl {op}: WRITE REFUSED — {norm_rel!r} is a .local.md shadow "
@@ -6849,48 +6859,105 @@ def _remote_hook_script() -> str:
 
 
 def _remote_splice_above_existing(existing: str) -> str:
-    """Stdin-preserving splice, same technique as `_gitleaks_splice_above_existing`."""
-    inner = _REMOTE_HOOK_BODY.rstrip("\n")
-    guard_block = (
+    """Stdin-preserving splice (see `_splice_guard_above_existing`)."""
+    return _splice_guard_above_existing(
+        existing,
         f"{_REMOTE_HOOK_MARKER_V1}\n"
         "# Spliced above a pre-existing hook by `tessctl gate install-hooks`.\n"
-        "# BLOCKS a push of brain/client data to a public remote; FALLS THROUGH otherwise.\n"
-        + 'REMOTE_GUARD_STDIN="$(cat; printf x)"; REMOTE_GUARD_STDIN="${REMOTE_GUARD_STDIN%x}"\n'
-        + "if printf '%s' \"$REMOTE_GUARD_STDIN\" | (\n"
-        + f"{inner}\n"
-        + "); then :; else\n"
-        + "  exit $?\n"
-        + "fi\n"
-        + f"{_REMOTE_HOOK_END_SENTINEL} — pre-existing hook follows (fed the same stdin)\n"
+        "# BLOCKS a push of brain/client data to a public remote; FALLS THROUGH otherwise.\n",
+        _REMOTE_HOOK_BODY.rstrip("\n"), _REMOTE_HOOK_END_SENTINEL, stdin_var="REMOTE_GUARD_STDIN",
     )
-    lines = existing.splitlines(keepends=True)
-    if lines and lines[0].startswith("#!"):
-        shebang, rest = lines[0], "".join(lines[1:])
+
+
+def _splice_guard_above_existing(existing: str, header: str, inner: str, end_sentinel: str,
+                                 stdin_var: str | None = None) -> str:
+    """Hook file content when a DIFFERENT (non-Tess) hook is already present:
+    the guard `inner` runs first inside a containment subshell (`if ( ... );
+    then :; else exit $?; fi`: blocks on non-zero, falls through on zero),
+    then the pre-existing content runs unmodified below `end_sentinel`.
+
+    `stdin_var` (pre-push guards): git delivers ref ranges on stdin, and the
+    guard reading them would starve the hook below. Stdin is captured once,
+    byte-exact, into that variable and re-fed to both."""
+    if stdin_var:
+        guard_block = (
+            header
+            + f'{stdin_var}="$(cat; printf x)"; {stdin_var}="${{{stdin_var}%x}}"\n'
+            + f"if printf '%s' \"${stdin_var}\" | (\n"
+            + f"{inner}\n"
+            + "); then :; else\n"
+            + "  exit $?\n"
+            + "fi\n"
+            + f"{end_sentinel} — pre-existing hook follows (fed the same stdin)\n"
+        )
     else:
-        shebang, rest = "#!/usr/bin/env bash\n", existing
-    if rest.strip():
-        rest = "printf '%s' \"$REMOTE_GUARD_STDIN\" | {\n" + rest.rstrip("\n") + "\n}\n"
+        guard_block = (
+            header
+            + "if (\n"
+            + f"{inner}\n"
+            + "); then :; else\n"
+            + "  exit $?\n"
+            + "fi\n"
+            + f"{end_sentinel} — pre-existing hook follows\n"
+        )
+    existing_lines = existing.splitlines(keepends=True)
+    if existing_lines and existing_lines[0].startswith("#!"):
+        shebang = existing_lines[0]
+        rest = "".join(existing_lines[1:])
+    else:
+        shebang = "#!/usr/bin/env bash\n"
+        rest = existing
+    if stdin_var and rest.strip():
+        rest = f"printf '%s' \"${stdin_var}\" | {{\n" + rest.rstrip("\n") + "\n}\n"
     return shebang + guard_block + "\n" + rest
 
 
-def _remote_install_git_hooks(root: Path) -> None:
+def _install_guard_hook(git_hooks_dir: Path, hook_name: str, script: str, marker: str, splice,
+                        skipped: str, notice: str, installed: str,
+                        notice_after_write: bool = False) -> None:
+    """Write one Tess guard hook: skip when `marker` is already there, splice
+    the guard above a foreign hook (printing `notice`), else write `script`;
+    then chmod 0755. `splice(existing) -> str` builds the spliced file;
+    `installed` may name `{hook_path}`."""
+    hook_path = git_hooks_dir / hook_name
+    if hook_path.exists():
+        existing = hook_path.read_text(encoding="utf-8", errors="replace")
+        if marker in existing:
+            print(skipped)
+            return
+        updated = splice(existing)
+        if not notice_after_write:
+            print(notice)
+        hook_path.write_text(updated, encoding="utf-8")
+        if notice_after_write:
+            print(notice)
+    else:
+        hook_path.write_text(script, encoding="utf-8")
+    os.chmod(str(hook_path), 0o755)
+    print(installed.format(hook_path=hook_path))
+
+
+def _git_hooks_dir_or_note(root: Path) -> Path | None:
     git_hooks_dir = root / ".git" / "hooks"
     if not git_hooks_dir.exists():
         print("  NOTE: .git/hooks/ not found — git hooks not installed (no git repo here?).")
+        return None
+    return git_hooks_dir
+
+
+def _remote_install_git_hooks(root: Path) -> None:
+    git_hooks_dir = _git_hooks_dir_or_note(root)
+    if git_hooks_dir is None:
         return
-    hook_path = git_hooks_dir / "pre-push"
-    if hook_path.exists():
-        existing = hook_path.read_text(encoding="utf-8", errors="replace")
-        if _REMOTE_HOOK_MARKER_V1 in existing:
-            print("  git hook pre-push: tess-remote-guard already v1 (skipped)")
-            return
-        hook_path.write_text(_remote_splice_above_existing(existing), encoding="utf-8")
-        print("  NOTICE: pre-existing pre-push hook detected — the public-remote guard was "
-              "spliced ABOVE it and FALLS THROUGH on a clean result (your hook still runs).")
-    else:
-        hook_path.write_text(_remote_hook_script(), encoding="utf-8")
-    os.chmod(str(hook_path), 0o755)
-    print(f"  installed git pre-push hook (public-remote guard) at {hook_path}")
+    _install_guard_hook(
+        git_hooks_dir, "pre-push", _remote_hook_script(), _REMOTE_HOOK_MARKER_V1,
+        _remote_splice_above_existing,
+        "  git hook pre-push: tess-remote-guard already v1 (skipped)",
+        "  NOTICE: pre-existing pre-push hook detected — the public-remote guard was "
+        "spliced ABOVE it and FALLS THROUGH on a clean result (your hook still runs).",
+        "  installed git pre-push hook (public-remote guard) at {hook_path}",
+        notice_after_write=True,
+    )
 
 
 def cmd_doctor(args, root: Path) -> None:
@@ -9021,10 +9088,8 @@ def _gpg_public_certificate_from_bytes_is_safe(key_bytes: bytes, homedir: Path) 
     return "pub" in record_types and not bool(record_types & {"sec", "ssb"})
 
 
-def _gate_validate_verifier_key_file_rel(
-    verifier: str, key_file: object,
-) -> tuple[str | None, str | None]:
-    """Validate a registered verifier key path without reading the checkout.
+def _gate_validate_key_file_rel(kind, ident: str, key_file: object) -> tuple[str | None, str | None]:
+    """Validate a registered public-key path without reading the checkout.
 
     The ship gate uses this before asking git for the BASE-tree blob.  Keeping
     this check independent of the working tree is deliberate: a candidate
@@ -9032,62 +9097,72 @@ def _gate_validate_verifier_key_file_rel(
     or a checkout symlink.
     """
     if not isinstance(key_file, str) or not key_file:
-        return None, f"policy.verifier_keys[{verifier!r}].public_key_file is not set"
+        return None, f"policy.{kind.registry}[{ident!r}].public_key_file is not set"
     if os.path.isabs(key_file) or ".." in Path(key_file).parts:
         return None, (
-            f"policy.verifier_keys[{verifier!r}].public_key_file {key_file!r} is an "
+            f"policy.{kind.registry}[{ident!r}].public_key_file {key_file!r} is an "
             f"absolute path or contains '..' traversal components — rejected "
             f"(C1 containment, fail-closed)"
         )
     return key_file, None
 
 
-def _gate_verify_verdict_signature(
-    root: Path, policy_instance: dict, instance: dict,
-    trusted_verifier_key_blobs: dict[str, bytes] | None = None,
-    trusted_verifier_key_errors: dict[str, str] | None = None,
-) -> tuple[bool, str | None]:
-    """The single source of truth for 'is this verdict's signature valid AND
-    tied to an allowed verifier's registered key'. Returns (True, None) when
-    the signature verifies; otherwise (False, <human-readable reason>) — the
-    reason is surfaced verbatim in `tessctl gate`'s block report and in
-    `tessctl verdict verify`'s output. Every failure branch is fail-closed:
-    an unsigned verdict, a malformed signature block, a stale
-    signed_content_sha256 (tamper detection — checked BEFORE the more
-    expensive gpg subprocess call), an unregistered verifier, a malformed
-    registered fingerprint, a `public_key_file` that is absolute or escapes
-    `root` via '..' traversal (LOW-1, C1 containment), a missing public-key
-    file, a failed gpg verification, a signature made by a DIFFERENT key
-    than the one registered for this verifier (C3 exact match), or — A10c
-    FIX (Gate Arena finding, disclosed 2026-07-07) — a signature that is
-    cryptographically valid and made by the exact registered key, but whose
-    key gpg reports as EXPIRED or REVOKED as of right now (checked at
-    verification time, not signing time — see
-    `_gpg_signing_key_validity_reason`) — all return False. Pure
-    with respect to `instance` and `policy_instance` — does not consult
-    `covers_paths`/`artifact_hashes`/`allowed_verifiers`-per-rule at all;
-    those remain the gate's own separate, per-(path, rule) checks.
+def _gate_validate_verifier_key_file_rel(
+    verifier: str, key_file: object,
+) -> tuple[str | None, str | None]:
+    return _gate_validate_key_file_rel(_VERDICT_SIG, verifier, key_file)
 
-    ``trusted_verifier_key_blobs`` is supplied only by the ship gate.  Its
-    bytes come from the immutable BASE git tree that supplied the effective
-    registration, never the candidate checkout.  ``None`` preserves the
-    standalone ``tessctl verdict verify`` behavior, which has no push base to
-    bind against; an empty mapping is intentionally distinct and fails closed.
+
+def _gate_validate_signoff_key_file_rel(
+    authorized_by: str, key_file: object,
+) -> tuple[str | None, str | None]:
+    return _gate_validate_key_file_rel(_SIGNOFF_SIG, authorized_by, key_file)
+
+
+def _gate_verify_detached_signature(
+    kind, root: Path, policy_instance: dict, data: dict,
+    trusted_key_blobs: dict[str, bytes] | None = None,
+    trusted_key_errors: dict[str, str] | None = None,
+) -> tuple[bool, str | None]:
+    """The single source of truth for 'is this signed artifact (a verdict or a
+    hard-floor sign-off, per `kind`) authenticated by the registered key of
+    the identity it claims'. Returns (True, None) when the signature verifies;
+    otherwise (False, <human-readable reason>), surfaced verbatim in `tessctl
+    gate`'s block report and in `verdict verify` / `gate signoff verify`.
+
+    Every failure branch is fail-closed: no or malformed signature block, a
+    stale signed_content_sha256 (tamper detection, checked BEFORE the gpg
+    subprocess), an unregistered identity, a malformed registered
+    fingerprint, a `public_key_file` that is absolute or escapes `root` via
+    '..' (LOW-1, C1 containment), a missing key file, a failed gpg
+    verification, a signature by a DIFFERENT key than the registered one (C3
+    exact match), or — A10c FIX (Gate Arena finding, disclosed 2026-07-07) —
+    a valid signature by the exact key whose key gpg reports as EXPIRED or
+    REVOKED right now (`_gpg_signing_key_validity_reason`). Pure with respect
+    to `data` and `policy_instance`: `covers_paths` / `artifact_hashes` /
+    per-rule `allowed_verifiers` stay the gate's separate checks.
+
+    ``trusted_key_blobs`` is supplied only by the ship gate. Its bytes come
+    from the immutable BASE git tree that supplied the effective
+    registration, never the candidate checkout. ``None`` keeps the
+    standalone verify behaviour, which has no push base to bind against; an
+    empty mapping is intentionally distinct and fails closed.
+
+    For sign-offs this closes the honesty-capstone-audit-2026-07-08 §3-d
+    bypass: `_gate_validate_signoff` used to accept a sign-off on JSON SHAPE
+    ALONE, so `authorized_by` is now an authenticated identity.
     """
-    verifier = instance.get("verifier")
-    sig = instance.get("signature")
-    _no_gpg = _gpg_missing_reason("verdict") if isinstance(sig, dict) else None
+    ident = data.get(kind.id_field)
+    sig = data.get("signature")
+    _no_gpg = _gpg_missing_reason(kind.noun) if isinstance(sig, dict) else None
     if _no_gpg:
         return False, _no_gpg
     if not isinstance(sig, dict):
-        return False, (
-            "no signature block present on this verdict — an unsigned verdict can "
-            "never cover any path (Phase 2b, fail-closed)"
-        )
+        return False, kind.unsigned
 
     algorithm = sig.get("algorithm")
-    if algorithm != VERDICT_SIGNATURE_ALGORITHM:
-        return False, f"signature.algorithm {algorithm!r} is not supported (expected {VERDICT_SIGNATURE_ALGORITHM!r})"
+    if algorithm != kind.algorithm:
+        return False, f"signature.algorithm {algorithm!r} is not supported (expected {kind.algorithm!r})"
 
     sig_armored = sig.get("signature_armored")
     if not isinstance(sig_armored, str) or not sig_armored.strip():
@@ -9097,57 +9172,55 @@ def _gate_verify_verdict_signature(
     if not isinstance(declared_hash, str) or not re.match(r"^[0-9a-f]{64}$", declared_hash):
         return False, "signature.signed_content_sha256 is missing or not a 64-hex-char sha256"
 
-    canonical = verdict_canonical_bytes(instance)
+    canonical = kind.canonical(data)
     actual_hash = hashlib.sha256(canonical).hexdigest()
     if declared_hash != actual_hash:
         return False, (
-            "signature.signed_content_sha256 does not match this verdict's CURRENT "
-            "canonical content — the verdict was edited/tampered with after signing "
-            "(fail-closed)"
+            f"signature.signed_content_sha256 does not match this {kind.noun}'s CURRENT "
+            f"canonical content — the {kind.noun} was edited/tampered with after signing "
+            f"(fail-closed)"
         )
 
-    verifier_keys = ((policy_instance.get("policy") or {}).get("verifier_keys") or {})
-    key_entry = verifier_keys.get(verifier) if isinstance(verifier_keys, dict) else None
+    registered = ((policy_instance.get("policy") or {}).get(kind.registry) or {})
+    key_entry = registered.get(ident) if isinstance(registered, dict) else None
     if not isinstance(key_entry, dict):
         return False, (
-            f"no registered public key for verifier {verifier!r} in policy.verifier_keys "
-            f"(fail-closed — an unregistered verifier's signature can never verify)"
+            f"no registered public key for {kind.id_label} {ident!r} in policy.{kind.registry} "
+            f"(fail-closed — an unregistered {kind.unregistered}'s signature can never verify)"
         )
 
     fingerprint = str(key_entry.get("fingerprint", "")).replace(" ", "").upper()
     if not _FULL_FP_RE.match(fingerprint):
         return False, (
-            f"policy.verifier_keys[{verifier!r}].fingerprint is not a valid 40-hex-char "
+            f"policy.{kind.registry}[{ident!r}].fingerprint is not a valid 40-hex-char "
             f"fingerprint"
         )
 
-    key_file, key_path_reason = _gate_validate_verifier_key_file_rel(
-        verifier, key_entry.get("public_key_file"),
-    )
+    key_file, key_path_reason = _gate_validate_key_file_rel(kind, ident, key_entry.get("public_key_file"))
     if key_path_reason:
         return False, key_path_reason
 
     trusted_key_bytes = None
-    if trusted_verifier_key_blobs is not None:
+    if trusted_key_blobs is not None:
         # P0: gate callers get their key bytes exclusively from the immutable
         # BASE tree.  Do not fall back to root/key_file when the BASE blob is
         # absent or malformed: that fallback would re-open the same-push
         # key-swap / revoked-key rollback bypass.
-        trusted_key_bytes = trusted_verifier_key_blobs.get(verifier)
+        trusted_key_bytes = trusted_key_blobs.get(ident)
         if trusted_key_bytes is None:
-            return False, (trusted_verifier_key_errors or {}).get(
-                verifier,
-                f"no immutable BASE-tree public-key blob is available for verifier "
-                f"{verifier!r} — fail-closed",
+            return False, (trusted_key_errors or {}).get(
+                ident,
+                f"no immutable BASE-tree public-key blob is available for {kind.id_label} "
+                f"{ident!r} — fail-closed",
             )
     else:
-        # Standalone `verdict verify` has no immutable push base. Keep its
-        # explicitly local diagnostic behavior, while still refusing a path
-        # that resolves outside the project or is itself a symlink.
+        # Standalone verify has no immutable push base. Keep its explicitly
+        # local diagnostic behavior, while still refusing a path that resolves
+        # outside the project or is itself a symlink.
         candidate_key_path = root / key_file
         if candidate_key_path.is_symlink():
             return False, (
-                f"registered public key file {key_file!r} for verifier {verifier!r} "
+                f"registered public key file {key_file!r} for {kind.id_label} {ident!r} "
                 f"is a symlink — rejected (C1 containment, fail-closed)"
             )
         root_resolved = root.resolve()
@@ -9156,15 +9229,15 @@ def _gate_verify_verdict_signature(
             key_path.relative_to(root_resolved)
         except ValueError:
             return False, (
-                f"policy.verifier_keys[{verifier!r}].public_key_file {key_file!r} resolves "
+                f"policy.{kind.registry}[{ident!r}].public_key_file {key_file!r} resolves "
                 f"outside the Tess root — rejected (C1 containment, fail-closed)"
             )
         if not key_path.exists():
             return False, (
-                f"registered public key file {key_file!r} for verifier {verifier!r} not found on disk"
+                f"registered public key file {key_file!r} for {kind.id_label} {ident!r} not found on disk"
             )
 
-    isolated_gpg = Path(tempfile.mkdtemp(prefix="tessctl_verdict_gpg_"))
+    isolated_gpg = Path(tempfile.mkdtemp(prefix=kind.tmp_prefix))
     try:
         try:
             isolated_gpg.chmod(0o700)
@@ -9173,14 +9246,14 @@ def _gate_verify_verdict_signature(
         import_command = ["gpg", "--homedir", str(isolated_gpg), "--import"]
         if trusted_key_bytes is not None:
             if not _gpg_public_certificate_from_bytes_is_safe(trusted_key_bytes, isolated_gpg):
-                return False, "immutable BASE verifier certificate is not a public-only OpenPGP key"
+                return False, f"immutable BASE {kind.cert_label} certificate is not a public-only OpenPGP key"
             import_r = subprocess.run(import_command, input=trusted_key_bytes, capture_output=True)
         else:
             import_r = subprocess.run([*import_command, str(key_path)], capture_output=True)
         if import_r.returncode != 0:
             return False, (
-                f"could not import registered public key {key_file!r} for verifier "
-                f"{verifier!r}: {import_r.stderr.decode('utf-8', errors='replace').strip()}"
+                f"could not import registered public key {key_file!r} for {kind.id_label} "
+                f"{ident!r}: {import_r.stderr.decode('utf-8', errors='replace').strip()}"
             )
         # Ultimate trust so --verify never emits a "not certified" complication —
         # same defensive posture _verify_tag_secure already applies.
@@ -9196,66 +9269,41 @@ def _gate_verify_verdict_signature(
 
     if not verified:
         return False, (
-            f"gpg signature verification failed for verifier {verifier!r} "
+            f"gpg signature verification failed for {kind.id_label} {ident!r} "
             f"(bad signature, or the signature does not match this content)"
         )
     if signing_fp.upper() != fingerprint:
         return False, (
             f"signature was made by key {signing_fp or 'unknown'}, which does NOT match "
-            f"the registered fingerprint {fingerprint} for verifier {verifier!r} — wrong "
+            f"the registered fingerprint {fingerprint} for {kind.id_label} {ident!r} — wrong "
             f"key, fail-closed (C3 exact match, no short-ID/proximity matching)"
         )
-    # A10c FIX (Gate Arena finding, disclosed 2026-07-07: "a verdict signed
-    # with an already-expired/revoked key still verifies"). Checked LAST,
-    # after crypto validity and exact-key match both already passed, so the
-    # block message is as specific as possible — this is the one remaining
-    # way a genuinely correctly-signed verdict can still fail: the KEY
-    # itself is no longer trustworthy, per gpg's own live EXPKEYSIG/
-    # REVKEYSIG classification (checked at VERIFICATION time, not signing
-    # time — see `_gpg_signing_key_validity_reason`).
+    # A10c: checked LAST, after crypto validity and exact-key match both
+    # passed, so the message is as specific as possible: the KEY itself is no
+    # longer trustworthy per gpg's live EXPKEYSIG/REVKEYSIG classification
+    # (at VERIFICATION time, not signing time).
     if key_validity_reason is not None:
         return False, (
             f"the signature is cryptographically valid and was made by the exact key "
-            f"registered for verifier {verifier!r}, but gpg reports that key is "
+            f"registered for {kind.id_label} {ident!r}, but gpg reports that key is "
             f"{key_validity_reason.upper()} as of RIGHT NOW (checked at verification "
-            f"time, not signing time) — A10c fix, fail-closed: a verdict signed by an "
-            f"{key_validity_reason} key can never cover a path, even one signed while "
-            f"the key was still good; rotate {verifier!r}'s entry in "
-            f"policy.verifier_keys to a currently-valid key and have this verdict "
-            f"re-signed"
+            f"time, not signing time) — " + kind.expired(ident, key_validity_reason)
         )
     return True, None
 
 
-# ---------------------------------------------------------------------------
-# honesty-capstone-audit-2026-07-08 §3-d FIX — hard-floor sign-off signing:
-# detached-signature verification. A near-verbatim structural TWIN of
-# `_gate_verify_verdict_signature` immediately above (same isolated-GNUPGHOME
-# bootstrap, same C3-exact-fingerprint-match discipline, same C1 public-key-
-# path containment, same A10c expired/revoked-key rejection via the SHARED
-# `_gpg_verify_detached_signature` helper) — kept as a SEPARATE function
-# rather than a parameterized refactor of the verdict path because the two
-# checks key off DIFFERENT policy maps (`signoff_keys` vs `verifier_keys`),
-# DIFFERENT identity fields (`authorized_by` vs `verifier`), and DIFFERENT
-# canonicalizers (`signoff_canonical_bytes` vs `verdict_canonical_bytes`) —
-# same "don't force an unrelated shared refactor onto a proven subsystem"
-# discipline `_gate_install_git_hooks`'s own module comment already applies
-# to the hook-splice code.
-# ---------------------------------------------------------------------------
-
-def _gate_validate_signoff_key_file_rel(
-    authorized_by: str, key_file: object,
-) -> tuple[str | None, str | None]:
-    """Validate a sign-off public-key path without reading the checkout."""
-    if not isinstance(key_file, str) or not key_file:
-        return None, f"policy.signoff_keys[{authorized_by!r}].public_key_file is not set"
-    if os.path.isabs(key_file) or ".." in Path(key_file).parts:
-        return None, (
-            f"policy.signoff_keys[{authorized_by!r}].public_key_file {key_file!r} is an "
-            f"absolute path or contains '..' traversal components — rejected "
-            f"(C1 containment, fail-closed)"
-        )
-    return key_file, None
+def _gate_verify_verdict_signature(
+    root: Path, policy_instance: dict, instance: dict,
+    trusted_verifier_key_blobs: dict[str, bytes] | None = None,
+    trusted_verifier_key_errors: dict[str, str] | None = None,
+) -> tuple[bool, str | None]:
+    """Is this verdict's signature valid AND tied to its `verifier`'s
+    registered key in `policy.verifier_keys`? See
+    `_gate_verify_detached_signature`."""
+    return _gate_verify_detached_signature(
+        _VERDICT_SIG, root, policy_instance, instance,
+        trusted_verifier_key_blobs, trusted_verifier_key_errors,
+    )
 
 
 def _gate_verify_signoff_signature(
@@ -9263,170 +9311,13 @@ def _gate_verify_signoff_signature(
     trusted_signoff_key_blobs: dict[str, bytes] | None = None,
     trusted_signoff_key_errors: dict[str, str] | None = None,
 ) -> tuple[bool, str | None]:
-    """The single source of truth for 'is this hard-floor sign-off
-    cryptographically authenticated'. Returns (True, None) when the
-    signature verifies against a REGISTERED key for the sign-off's own
-    `authorized_by` identity in `policy.signoff_keys`; otherwise (False,
-    <human-readable reason>). Every failure branch is fail-closed: a missing
-    signature block, a malformed signature block, a stale
-    signed_content_sha256 (tamper detection, checked BEFORE the gpg
-    subprocess), an unregistered authorizer, a malformed registered
-    fingerprint, a `public_key_file` that is absolute or escapes `root` via
-    '..' traversal (same C1 containment as verdict-signature verification),
-    a missing public-key file, a failed gpg verification, a signature made
-    by a DIFFERENT key than the one registered for this authorizer (C3 exact
-    match), or a cryptographically valid signature made by a key gpg reports
-    as EXPIRED/REVOKED as of right now — all return False. This closes the
-    honesty-capstone-audit-2026-07-08 §3-d bypass: `_gate_validate_signoff`
-    used to accept a sign-off on JSON SHAPE ALONE (five non-empty fields, no
-    signature, no authentication) — any agent able to write a file could
-    forge a hard-floor clearance. `authorized_by` is now an authenticated
-    cryptographic identity, not just a free-text string field.
-
-    The ship gate supplies ``trusted_signoff_key_blobs`` from its immutable
-    BASE tree. ``None`` is reserved for standalone sign-off diagnostics,
-    which have no push base; an empty mapping is intentionally fail-closed.
-    """
-    authorized_by = data.get("authorized_by")
-    sig = data.get("signature")
-    _no_gpg = _gpg_missing_reason("sign-off") if isinstance(sig, dict) else None
-    if _no_gpg:
-        return False, _no_gpg
-    if not isinstance(sig, dict):
-        return False, (
-            "no signature block present on this sign-off — an unsigned/hand-authored "
-            "sign-off can never clear a hard floor (fail-closed, honesty-capstone-audit-"
-            "2026-07-08 §3-d)"
-        )
-
-    algorithm = sig.get("algorithm")
-    if algorithm != SIGNOFF_SIGNATURE_ALGORITHM:
-        return False, f"signature.algorithm {algorithm!r} is not supported (expected {SIGNOFF_SIGNATURE_ALGORITHM!r})"
-
-    sig_armored = sig.get("signature_armored")
-    if not isinstance(sig_armored, str) or not sig_armored.strip():
-        return False, "signature.signature_armored is missing or empty"
-
-    declared_hash = sig.get("signed_content_sha256")
-    if not isinstance(declared_hash, str) or not re.match(r"^[0-9a-f]{64}$", declared_hash):
-        return False, "signature.signed_content_sha256 is missing or not a 64-hex-char sha256"
-
-    canonical = signoff_canonical_bytes(data)
-    actual_hash = hashlib.sha256(canonical).hexdigest()
-    if declared_hash != actual_hash:
-        return False, (
-            "signature.signed_content_sha256 does not match this sign-off's CURRENT "
-            "canonical content — the sign-off was edited/tampered with after signing "
-            "(fail-closed)"
-        )
-
-    signoff_keys = ((policy_instance.get("policy") or {}).get("signoff_keys") or {})
-    key_entry = signoff_keys.get(authorized_by) if isinstance(signoff_keys, dict) else None
-    if not isinstance(key_entry, dict):
-        return False, (
-            f"no registered public key for sign-off authorizer {authorized_by!r} in "
-            f"policy.signoff_keys (fail-closed — an unregistered authorizer's signature "
-            f"can never verify)"
-        )
-
-    fingerprint = str(key_entry.get("fingerprint", "")).replace(" ", "").upper()
-    if not _FULL_FP_RE.match(fingerprint):
-        return False, (
-            f"policy.signoff_keys[{authorized_by!r}].fingerprint is not a valid 40-hex-char "
-            f"fingerprint"
-        )
-
-    key_file, key_path_reason = _gate_validate_signoff_key_file_rel(
-        authorized_by, key_entry.get("public_key_file"),
+    """Is this hard-floor sign-off signed by the registered key of its own
+    `authorized_by` identity in `policy.signoff_keys`? See
+    `_gate_verify_detached_signature`."""
+    return _gate_verify_detached_signature(
+        _SIGNOFF_SIG, root, policy_instance, data,
+        trusted_signoff_key_blobs, trusted_signoff_key_errors,
     )
-    if key_path_reason:
-        return False, key_path_reason
-
-    trusted_key_bytes = None
-    if trusted_signoff_key_blobs is not None:
-        # Same P0 rule as verifier verdicts: no fallback to the candidate
-        # checkout when a BASE registration/key blob is absent or invalid.
-        trusted_key_bytes = trusted_signoff_key_blobs.get(authorized_by)
-        if trusted_key_bytes is None:
-            return False, (trusted_signoff_key_errors or {}).get(
-                authorized_by,
-                f"no immutable BASE-tree public-key blob is available for sign-off "
-                f"authorizer {authorized_by!r} — fail-closed",
-            )
-    else:
-        candidate_key_path = root / key_file
-        if candidate_key_path.is_symlink():
-            return False, (
-                f"registered public key file {key_file!r} for sign-off authorizer "
-                f"{authorized_by!r} is a symlink — rejected (C1 containment, fail-closed)"
-            )
-        root_resolved = root.resolve()
-        key_path = candidate_key_path.resolve()
-        try:
-            key_path.relative_to(root_resolved)
-        except ValueError:
-            return False, (
-                f"policy.signoff_keys[{authorized_by!r}].public_key_file {key_file!r} resolves "
-                f"outside the Tess root — rejected (C1 containment, fail-closed)"
-            )
-        if not key_path.exists():
-            return False, (
-                f"registered public key file {key_file!r} for sign-off authorizer "
-                f"{authorized_by!r} not found on disk"
-            )
-
-    isolated_gpg = Path(tempfile.mkdtemp(prefix="tessctl_signoff_gpg_"))
-    try:
-        try:
-            isolated_gpg.chmod(0o700)
-        except OSError:
-            pass
-        import_command = ["gpg", "--homedir", str(isolated_gpg), "--import"]
-        if trusted_key_bytes is not None:
-            if not _gpg_public_certificate_from_bytes_is_safe(trusted_key_bytes, isolated_gpg):
-                return False, "immutable BASE sign-off certificate is not a public-only OpenPGP key"
-            import_r = subprocess.run(import_command, input=trusted_key_bytes, capture_output=True)
-        else:
-            import_r = subprocess.run([*import_command, str(key_path)], capture_output=True)
-        if import_r.returncode != 0:
-            return False, (
-                f"could not import registered public key {key_file!r} for sign-off "
-                f"authorizer {authorized_by!r}: "
-                f"{import_r.stderr.decode('utf-8', errors='replace').strip()}"
-            )
-        subprocess.run(
-            ["gpg", "--homedir", str(isolated_gpg), "--import-ownertrust"],
-            input=f"{fingerprint}:6:\n".encode(), capture_output=True,
-        )
-        verified, signing_fp, key_validity_reason = _gpg_verify_detached_signature(
-            canonical, sig_armored, isolated_gpg,
-        )
-    finally:
-        shutil.rmtree(str(isolated_gpg), ignore_errors=True)
-
-    if not verified:
-        return False, (
-            f"gpg signature verification failed for sign-off authorizer {authorized_by!r} "
-            f"(bad signature, or the signature does not match this content)"
-        )
-    if signing_fp.upper() != fingerprint:
-        return False, (
-            f"signature was made by key {signing_fp or 'unknown'}, which does NOT match "
-            f"the registered fingerprint {fingerprint} for sign-off authorizer "
-            f"{authorized_by!r} — wrong key, fail-closed (C3 exact match, no short-ID/"
-            f"proximity matching)"
-        )
-    if key_validity_reason is not None:
-        return False, (
-            f"the signature is cryptographically valid and was made by the exact key "
-            f"registered for sign-off authorizer {authorized_by!r}, but gpg reports that "
-            f"key is {key_validity_reason.upper()} as of RIGHT NOW (checked at "
-            f"verification time, not signing time) — fail-closed: a hard-floor sign-off "
-            f"signed by an {key_validity_reason} key can never clear the floor; rotate "
-            f"{authorized_by!r}'s entry in policy.signoff_keys to a currently-valid key "
-            f"and have this sign-off re-signed"
-        )
-    return True, None
 
 
 def _clone_verified_signed_tag(upstream: str, ref: str, clone_dir: Path, label: str,
@@ -9640,8 +9531,7 @@ def _aux_path_unsafe(root: Path, rel: str) -> str | None:
     """Why `rel` cannot be written as a plain file inside the project (a
     symlink on the way, a directory in its place), or None."""
     parts = Path(rel).parts
-    if not rel or os.path.isabs(rel) or ".." in parts or any(
-            p.lower().rstrip(". ") == ".git" for p in parts):
+    if not rel or os.path.isabs(rel) or ".." in parts or _rel_has_git_component(rel):
         return "not a plain path inside the project"
     for i in range(1, len(parts) + 1):
         p = root.joinpath(*parts[:i])
@@ -9672,8 +9562,7 @@ def _stage_aux_runtime(clone_dir: Path, commit: str, staging_dir: Path, verified
         if mode not in ("100644", "100755"):
             sys.exit(f"tessctl fetch: SECURITY REJECT — release entry {rel!r} is not a regular "
                      f"file (git mode {mode}). Extraction aborted — nothing was applied.")
-        if os.path.isabs(rel) or ".." in parts or any(
-                p.lower().rstrip(". ") == ".git" for p in parts):
+        if os.path.isabs(rel) or ".." in parts or _rel_has_git_component(rel):
             sys.exit(f"tessctl fetch: PATH TRAVERSAL in release entry {rel!r}. "
                      f"Extraction aborted — nothing was applied.")
         kind, data = blobs.get(oid, (None, None))
@@ -10132,7 +10021,7 @@ def fetch_to_staging(root: Path, ref: str, allow_tofu: bool = False) -> None:
                     f"  Extraction aborted — no files were written."
                 )
             # C4: reject any '.git' path component (case-insensitive, trailing-dot-aware)
-            if any(p.lower().rstrip(". ") == ".git" for p in Path(rel_str).parts):
+            if _rel_has_git_component(rel_str):
                 sys.exit(
                     f"tessctl fetch: PATH TRAVERSAL — upstream entry {rel_str!r} contains "
                     f"'.git' path component (C4). Extraction aborted — no files written."
@@ -12469,6 +12358,12 @@ def _presence_isatty(stream) -> bool:
         return False
 
 
+def _interactive_terminal() -> bool:
+    """True only when stdin AND stdout are a terminal: a person typing at a
+    shell. An assistant's tool call reads output through a pipe or a file."""
+    return _presence_isatty(sys.stdin) and _presence_isatty(sys.stdout)
+
+
 def _require_human_presence(cmd: str, subject: str, unchanged: str, confirm: str,
                             prompt: str = "confirm> ", lines=(), how: str = "") -> None:
     """v1.0 audit: the presence check `tessctl approve` uses, for every
@@ -12567,14 +12462,8 @@ def _approve_require_human_presence(live_rel: str, review_lines=None) -> None:
     """
     _refuse_in_agent_session("tessctl approve", f"{live_rel} stays quarantined.")
 
-    def _isatty(stream) -> bool:
-        try:
-            return bool(stream is not None and stream.isatty())
-        except (AttributeError, ValueError, OSError):
-            return False
-
-    stdin_tty = _isatty(sys.stdin)
-    stdout_tty = _isatty(sys.stdout)
+    stdin_tty = _presence_isatty(sys.stdin)
+    stdout_tty = _presence_isatty(sys.stdout)
     if not (stdin_tty and stdout_tty):
         sys.exit(
             "tessctl approve: REFUSED — approving a quarantined or security-tier file "
@@ -15343,14 +15232,7 @@ def _vault_cmd_set(args, root: Path) -> None:
 
 
 def _vault_interactive_terminal() -> bool:
-    """True only when stdin AND stdout are a terminal: a person typing at a
-    shell. An assistant's tool call reads output through a pipe or a file."""
-    def _tty(stream) -> bool:
-        try:
-            return bool(stream is not None and stream.isatty())
-        except (AttributeError, ValueError, OSError):
-            return False
-    return _tty(sys.stdin) and _tty(sys.stdout)
+    return _interactive_terminal()
 
 
 def _vault_cmd_get(args, root: Path) -> None:
@@ -16100,7 +15982,16 @@ def verdict_canonical_bytes(instance: dict) -> bytes:
     incidental whitespace/key-order differences between them. A verdict
     signed while authored as YAML verifies identically if later re-saved as
     JSON with the same field values, and vice versa."""
-    payload = {k: v for k, v in instance.items() if k != "signature"}
+    return _canonical_json_bytes(instance)
+
+
+def _canonical_json_bytes(obj: dict, exclude_key: str = "signature") -> bytes:
+    """Compact, key-sorted JSON (ensure_ascii=False) of `obj` minus
+    `exclude_key`, as UTF-8: the one canonicalisation verdicts, sign-offs and
+    the audit pack's receipt check sign or re-hash. Pinned by
+    tests/test_canonical_bytes_golden.py: changing a byte here invalidates
+    every signature already issued."""
+    payload = {k: v for k, v in obj.items() if k != exclude_key}
     return json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
 
 
@@ -16125,8 +16016,44 @@ def signoff_canonical_bytes(data: dict) -> bytes:
     honesty-capstone-audit-2026-07-08 §3-d sign-off-forgery bypass (a
     sign-off used to be accepted on JSON SHAPE ALONE, with no signature and
     no authentication of its `authorized_by` field at all)."""
-    payload = {k: v for k, v in data.items() if k != "signature"}
-    return json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    return _canonical_json_bytes(data)
+
+
+class _SigKind:
+    """What differs between verdict and sign-off signature checks: the policy
+    registry, the identity field and its label, the algorithm, the
+    canonicaliser, and the nouns in the reason strings."""
+
+    def __init__(self, *, noun, registry, id_field, id_label, unregistered, algorithm,
+                 canonical, unsigned, tmp_prefix, cert_label, expired):
+        self.noun, self.registry, self.id_field, self.id_label = noun, registry, id_field, id_label
+        self.unregistered, self.algorithm, self.canonical = unregistered, algorithm, canonical
+        self.unsigned, self.tmp_prefix, self.cert_label, self.expired = unsigned, tmp_prefix, cert_label, expired
+
+
+_VERDICT_SIG = _SigKind(
+    noun="verdict", registry="verifier_keys", id_field="verifier", id_label="verifier",
+    unregistered="verifier", algorithm=VERDICT_SIGNATURE_ALGORITHM, canonical=lambda d: verdict_canonical_bytes(d),
+    unsigned=("no signature block present on this verdict — an unsigned verdict can "
+              "never cover any path (Phase 2b, fail-closed)"),
+    tmp_prefix="tessctl_verdict_gpg_", cert_label="verifier",
+    expired=lambda ident, why: (
+        f"A10c fix, fail-closed: a verdict signed by an {why} key can never cover a path, "
+        f"even one signed while the key was still good; rotate {ident!r}'s entry in "
+        f"policy.verifier_keys to a currently-valid key and have this verdict re-signed"),
+)
+_SIGNOFF_SIG = _SigKind(
+    noun="sign-off", registry="signoff_keys", id_field="authorized_by", id_label="sign-off authorizer",
+    unregistered="authorizer", algorithm=SIGNOFF_SIGNATURE_ALGORITHM, canonical=lambda d: signoff_canonical_bytes(d),
+    unsigned=("no signature block present on this sign-off — an unsigned/hand-authored "
+              "sign-off can never clear a hard floor (fail-closed, honesty-capstone-audit-"
+              "2026-07-08 §3-d)"),
+    tmp_prefix="tessctl_signoff_gpg_", cert_label="sign-off",
+    expired=lambda ident, why: (
+        f"fail-closed: a hard-floor sign-off signed by an {why} key can never clear the "
+        f"floor; rotate {ident!r}'s entry in policy.signoff_keys to a currently-valid key "
+        f"and have this sign-off re-signed"),
+)
 
 
 def _resolve_ref(ref: str, base_dir: Path, root_schema: dict) -> dict:
@@ -16766,12 +16693,7 @@ def _verdict_sign_load_file(file_arg: str) -> Path:
 # ---------------------------------------------------------------------------
 
 def _signer_is_terminal() -> bool:
-    def _tty(stream) -> bool:
-        try:
-            return bool(stream is not None and stream.isatty())
-        except (AttributeError, ValueError, OSError):
-            return False
-    return _tty(sys.stdin) and _tty(sys.stdout)
+    return _interactive_terminal()
 
 
 def _signer_require_terminal(cmd: str) -> None:
@@ -17830,89 +17752,58 @@ def _gate_git_regular_blob_at_ref(
     return blob.stdout, None
 
 
-def _gate_load_baseline_verifier_key_blobs(
-    root: Path, baseline_instance: dict | None, baseline_ref: str | None,
+def _gate_load_baseline_key_blobs(
+    kind, root: Path, baseline_instance: dict | None, baseline_ref: str | None,
 ) -> tuple[dict[str, bytes], dict[str, str]]:
-    """Load each baseline verifier key's bytes from the same BASE tree.
-
-    The returned maps are passed to `_gate_verify_verdict_signature` for a
-    push/CI check. An invalid baseline registration is not silently skipped:
-    its verifier gets an explicit error and every verdict claiming it is
-    denied before GPG can accept any candidate-controlled public-key bytes.
+    """Load each baseline registered key's bytes (`policy.<kind.registry>`)
+    from the same immutable BASE tree, for `_gate_verify_detached_signature`
+    on a push/CI check. An invalid baseline registration is not silently
+    skipped: its identity gets an explicit error and every artifact claiming
+    it is denied before GPG can accept any candidate-controlled key bytes.
+    A hard-floor sign-off is an authorization boundary too, so the same rule
+    stops a candidate replacing a registered operator's key bytes (including
+    deleting revocation material) while keeping the identity or fingerprint.
     """
     if baseline_instance is None or not baseline_ref:
         return {}, {}
     base_policy = (baseline_instance.get("policy") or {})
-    baseline_keys = base_policy.get("verifier_keys") if isinstance(base_policy, dict) else None
+    baseline_keys = base_policy.get(kind.registry) if isinstance(base_policy, dict) else None
     if not isinstance(baseline_keys, dict):
         return {}, {}
 
     blobs: dict[str, bytes] = {}
     errors: dict[str, str] = {}
-    for verifier, entry in baseline_keys.items():
-        if not isinstance(verifier, str):
+    for ident, entry in baseline_keys.items():
+        if not isinstance(ident, str):
             continue
         if not isinstance(entry, dict):
-            errors[verifier] = (
-                f"policy.verifier_keys[{verifier!r}] is not a mapping in immutable BASE "
+            errors[ident] = (
+                f"policy.{kind.registry}[{ident!r}] is not a mapping in immutable BASE "
                 f"policy — fail-closed"
             )
             continue
-        key_file, path_reason = _gate_validate_verifier_key_file_rel(
-            verifier, entry.get("public_key_file"),
-        )
+        key_file, path_reason = _gate_validate_key_file_rel(kind, ident, entry.get("public_key_file"))
         if path_reason:
-            errors[verifier] = path_reason
+            errors[ident] = path_reason
             continue
         key_bytes, blob_reason = _gate_git_regular_blob_at_ref(root, baseline_ref, key_file)
         if blob_reason:
-            errors[verifier] = blob_reason
+            errors[ident] = blob_reason
             continue
-        blobs[verifier] = key_bytes
+        blobs[ident] = key_bytes
     return blobs, errors
+
+
+def _gate_load_baseline_verifier_key_blobs(
+    root: Path, baseline_instance: dict | None, baseline_ref: str | None,
+) -> tuple[dict[str, bytes], dict[str, str]]:
+    return _gate_load_baseline_key_blobs(_VERDICT_SIG, root, baseline_instance, baseline_ref)
 
 
 def _gate_load_baseline_signoff_key_blobs(
     root: Path, baseline_instance: dict | None, baseline_ref: str | None,
 ) -> tuple[dict[str, bytes], dict[str, str]]:
-    """Load hard-floor sign-off key bytes from the same immutable BASE tree.
-
-    This is intentionally symmetric with verifier-key loading. A hard-floor
-    clearance is itself an authorization boundary, so a candidate must not be
-    able to replace a pre-registered operator's key bytes (including by
-    deleting revocation material) while retaining the same policy identity or
-    fingerprint.
-    """
-    if baseline_instance is None or not baseline_ref:
-        return {}, {}
-    base_policy = (baseline_instance.get("policy") or {})
-    baseline_keys = base_policy.get("signoff_keys") if isinstance(base_policy, dict) else None
-    if not isinstance(baseline_keys, dict):
-        return {}, {}
-
-    blobs: dict[str, bytes] = {}
-    errors: dict[str, str] = {}
-    for authorized_by, entry in baseline_keys.items():
-        if not isinstance(authorized_by, str):
-            continue
-        if not isinstance(entry, dict):
-            errors[authorized_by] = (
-                f"policy.signoff_keys[{authorized_by!r}] is not a mapping in immutable "
-                f"BASE policy — fail-closed"
-            )
-            continue
-        key_file, path_reason = _gate_validate_signoff_key_file_rel(
-            authorized_by, entry.get("public_key_file"),
-        )
-        if path_reason:
-            errors[authorized_by] = path_reason
-            continue
-        key_bytes, blob_reason = _gate_git_regular_blob_at_ref(root, baseline_ref, key_file)
-        if blob_reason:
-            errors[authorized_by] = blob_reason
-            continue
-        blobs[authorized_by] = key_bytes
-    return blobs, errors
+    return _gate_load_baseline_key_blobs(_SIGNOFF_SIG, root, baseline_instance, baseline_ref)
 
 
 def _gate_merge_signoff_keys_baseline_first(new_instance: dict, baseline_instance: dict | None) -> dict:
@@ -20502,10 +20393,12 @@ def _anchor_project_id(root: Path) -> str | None:
     return roots[0]
 
 
-def _anchor_git_hooks_dir(root: Path) -> Path | None:
+def _anchor_git_common_dir(root: Path) -> Path | None:
+    """The common git dir, read from .git directly (no git call). Same code as
+    run-pinned.py's anchor_git_common_dir (tests/test_v1_anchor_helpers_identity.py)."""
     dot = root / ".git"
     if dot.is_dir():
-        return dot / "hooks"
+        return dot
     try:
         text = dot.read_text(encoding="utf-8")
     except OSError:
@@ -20520,7 +20413,13 @@ def _anchor_git_hooks_dir(root: Path) -> Path | None:
         common = Path(c) if os.path.isabs(c) else gitdir / c
     except OSError:
         pass
-    return common / "hooks"
+    return common
+
+
+def _anchor_git_hooks_dir(root: Path) -> Path | None:
+    """<common git dir>/hooks, read from .git directly (no git call)."""
+    common = _anchor_git_common_dir(root)
+    return common / "hooks" if common else None
 
 
 def _anchor_restore_hooks_dir(root: Path) -> Path | None:
@@ -21177,11 +21076,7 @@ def _anchor_restore_local_settings(root: Path, rec: dict, data: bytes | None, bl
 
 
 def _anchor_tty() -> bool:
-    try:
-        return bool(sys.stdin is not None and sys.stdin.isatty()
-                    and sys.stdout is not None and sys.stdout.isatty())
-    except (AttributeError, ValueError, OSError):
-        return False
+    return _interactive_terminal()
 
 
 def _anchor_old_bytes(rec) -> "bytes | None":
@@ -21771,17 +21666,11 @@ def _update_confirm_policy_rule_changes(root: Path, tag: str) -> None:
         + "Nothing has been changed yet.\n"
     )
 
-    def _tty(stream) -> bool:
-        try:
-            return bool(stream is not None and stream.isatty())
-        except (AttributeError, ValueError, OSError):
-            return False
-
     if _agent_session_marker():
         out.write(msg)
         out.flush()
         _refuse_in_agent_session("tessctl update", "you stay on your current version.")
-    if not (_tty(sys.stdin) and _tty(out)):
+    if not (_presence_isatty(sys.stdin) and _presence_isatty(out)):
         sys.exit(
             msg
             + "tessctl update: STOPPED — a person has to approve new safety rules, and this "
@@ -22554,75 +22443,31 @@ def _gate_splice_above_existing(hook_script: str, existing: str, feeds_stdin: bo
     # Drop shebang + the two leading comment lines this module always emits,
     # leaving just the body (starts at "set -euo pipefail").
     body_lines = [ln for ln in lines[1:] if not ln.startswith("#")]
-    inner = "".join(body_lines).rstrip("\n")
-
-    header = (
+    return _splice_guard_above_existing(
+        existing,
         f"{_GATE_HOOK_MARKER_V1}\n"
         "# Spliced above a pre-existing hook by `tessctl gate install-hooks`.\n"
         "# Runs first inside a containment subshell: BLOCKS on a gate violation,\n"
-        "# FALLS THROUGH to the pre-existing hook below on a clean result.\n"
+        "# FALLS THROUGH to the pre-existing hook below on a clean result.\n",
+        "".join(body_lines).rstrip("\n"), _GATE_HOOK_END_SENTINEL,
+        stdin_var="GATE_STDIN" if feeds_stdin else None,
     )
-    if feeds_stdin:
-        guard_block = (
-            header
-            + "GATE_STDIN=\"$(cat; printf x)\"; GATE_STDIN=\"${GATE_STDIN%x}\"\n"
-            + "if printf '%s' \"$GATE_STDIN\" | (\n"
-            + f"{inner}\n"
-            + "); then :; else\n"
-            + "  exit $?\n"
-            + "fi\n"
-            + f"{_GATE_HOOK_END_SENTINEL} — pre-existing hook follows (fed the same stdin)\n"
-        )
-    else:
-        guard_block = (
-            header
-            + "if (\n"
-            + f"{inner}\n"
-            + "); then :; else\n"
-            + "  exit $?\n"
-            + "fi\n"
-            + f"{_GATE_HOOK_END_SENTINEL} — pre-existing hook follows\n"
-        )
-
-    existing_lines = existing.splitlines(keepends=True)
-    if existing_lines and existing_lines[0].startswith("#!"):
-        shebang = existing_lines[0]
-        rest = "".join(existing_lines[1:])
-    else:
-        shebang = "#!/usr/bin/env bash\n"
-        rest = existing
-
-    if feeds_stdin and rest.strip():
-        rest = "printf '%s' \"$GATE_STDIN\" | {\n" + rest.rstrip("\n") + "\n}\n"
-
-    return shebang + guard_block + "\n" + rest
 
 
 def _gate_install_git_hooks(root: Path) -> None:
-    git_hooks_dir = root / ".git" / "hooks"
-    if not git_hooks_dir.exists():
-        print("  NOTE: .git/hooks/ not found — git hooks not installed (no git repo here?).")
+    git_hooks_dir = _git_hooks_dir_or_note(root)
+    if git_hooks_dir is None:
         return
-
     for hook_name, hook_script in _gate_hook_scripts().items():
-        hook_path = git_hooks_dir / hook_name
-        if hook_path.exists():
-            existing = hook_path.read_text(encoding="utf-8", errors="replace")
-            if _GATE_HOOK_MARKER_V1 in existing:
-                print(f"  git hook {hook_name}: tess-gate-guard already v1 (skipped)")
-                continue
-            updated = _gate_splice_above_existing(
-                hook_script, existing, feeds_stdin=(hook_name == "pre-push")
-            )
-            print(
-                f"  NOTICE: pre-existing {hook_name} hook detected — the gate guard was "
-                f"spliced ABOVE it and FALLS THROUGH on a clean result (your hook still runs)."
-            )
-            hook_path.write_text(updated, encoding="utf-8")
-        else:
-            hook_path.write_text(hook_script, encoding="utf-8")
-        os.chmod(str(hook_path), 0o755)
-        print(f"  installed git {hook_name} hook at {hook_path}")
+        _install_guard_hook(
+            git_hooks_dir, hook_name, hook_script, _GATE_HOOK_MARKER_V1,
+            lambda existing, s=hook_script, h=hook_name: _gate_splice_above_existing(
+                s, existing, feeds_stdin=(h == "pre-push")),
+            f"  git hook {hook_name}: tess-gate-guard already v1 (skipped)",
+            f"  NOTICE: pre-existing {hook_name} hook detected — the gate guard was "
+            f"spliced ABOVE it and FALLS THROUGH on a clean result (your hook still runs).",
+            f"  installed git {hook_name} hook at {{hook_path}}",
+        )
 
 
 _GATE_CI_WORKFLOW_MARKER = "# tess-gate-ci v5"
@@ -22999,55 +22844,28 @@ def _publish_hook_script() -> str:
 def _publish_splice_above_existing(existing: str) -> str:
     """Same containment-subshell splice pattern as `_gate_splice_above_existing`
     (pre-commit only — no stdin to worry about, unlike the pre-push guards)."""
-    inner = _PUBLISH_HOOK_BODY.rstrip("\n")
-    header = (
+    return _splice_guard_above_existing(
+        existing,
         f"{_PUBLISH_HOOK_MARKER_V1}\n"
         "# Spliced above a pre-existing hook by `tessctl gate install-hooks`.\n"
         "# Runs first inside a containment subshell: BLOCKS on a private-path\n"
-        "# violation, FALLS THROUGH to the pre-existing hook below on a clean result.\n"
+        "# violation, FALLS THROUGH to the pre-existing hook below on a clean result.\n",
+        _PUBLISH_HOOK_BODY.rstrip("\n"), _PUBLISH_HOOK_END_SENTINEL,
     )
-    guard_block = (
-        header
-        + "if (\n"
-        + f"{inner}\n"
-        + "); then :; else\n"
-        + "  exit $?\n"
-        + "fi\n"
-        + f"{_PUBLISH_HOOK_END_SENTINEL} — pre-existing hook follows\n"
-    )
-    existing_lines = existing.splitlines(keepends=True)
-    if existing_lines and existing_lines[0].startswith("#!"):
-        shebang = existing_lines[0]
-        rest = "".join(existing_lines[1:])
-    else:
-        shebang = "#!/usr/bin/env bash\n"
-        rest = existing
-    return shebang + guard_block + "\n" + rest
 
 
 def _publish_install_git_hooks(root: Path) -> None:
-    git_hooks_dir = root / ".git" / "hooks"
-    if not git_hooks_dir.exists():
-        print("  NOTE: .git/hooks/ not found — git hooks not installed (no git repo here?).")
+    git_hooks_dir = _git_hooks_dir_or_note(root)
+    if git_hooks_dir is None:
         return
-
-    hook_path = git_hooks_dir / "pre-commit"
-    hook_script = _publish_hook_script()
-    if hook_path.exists():
-        existing = hook_path.read_text(encoding="utf-8", errors="replace")
-        if _PUBLISH_HOOK_MARKER_V1 in existing:
-            print("  git hook pre-commit: tess-publish-guard already v1 (skipped)")
-            return
-        updated = _publish_splice_above_existing(existing)
-        print(
-            "  NOTICE: pre-existing pre-commit hook detected — the publish-clean guard "
-            "was spliced ABOVE it and FALLS THROUGH on a clean result (your hook still runs)."
-        )
-        hook_path.write_text(updated, encoding="utf-8")
-    else:
-        hook_path.write_text(hook_script, encoding="utf-8")
-    os.chmod(str(hook_path), 0o755)
-    print(f"  installed git pre-commit hook (publish-clean guard) at {hook_path}")
+    _install_guard_hook(
+        git_hooks_dir, "pre-commit", _publish_hook_script(), _PUBLISH_HOOK_MARKER_V1,
+        _publish_splice_above_existing,
+        "  git hook pre-commit: tess-publish-guard already v1 (skipped)",
+        "  NOTICE: pre-existing pre-commit hook detected — the publish-clean guard "
+        "was spliced ABOVE it and FALLS THROUGH on a clean result (your hook still runs).",
+        "  installed git pre-commit hook (publish-clean guard) at {hook_path}",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -23118,58 +22936,28 @@ def _gitleaks_splice_above_existing(existing: str) -> str:
     """Stdin-preserving splice (pre-push reads ref ranges from stdin) — same
     capture-once-and-refeed technique `_vault_install_git_hooks` /
     `_gate_splice_above_existing` use for their own pre-push splices."""
-    inner = _GITLEAKS_HOOK_BODY.rstrip("\n")
-    header = (
+    return _splice_guard_above_existing(
+        existing,
         f"{_GITLEAKS_HOOK_MARKER_V1}\n"
         "# Spliced above a pre-existing hook by `tessctl gate install-hooks`.\n"
         "# Runs first inside a containment subshell: BLOCKS on a detected secret,\n"
-        "# FALLS THROUGH to the pre-existing hook below on a clean result.\n"
+        "# FALLS THROUGH to the pre-existing hook below on a clean result.\n",
+        _GITLEAKS_HOOK_BODY.rstrip("\n"), _GITLEAKS_HOOK_END_SENTINEL, stdin_var="GITLEAKS_STDIN",
     )
-    guard_block = (
-        header
-        + 'GITLEAKS_STDIN="$(cat; printf x)"; GITLEAKS_STDIN="${GITLEAKS_STDIN%x}"\n'
-        + "if printf '%s' \"$GITLEAKS_STDIN\" | (\n"
-        + f"{inner}\n"
-        + "); then :; else\n"
-        + "  exit $?\n"
-        + "fi\n"
-        + f"{_GITLEAKS_HOOK_END_SENTINEL} — pre-existing hook follows (fed the same stdin)\n"
-    )
-    existing_lines = existing.splitlines(keepends=True)
-    if existing_lines and existing_lines[0].startswith("#!"):
-        shebang = existing_lines[0]
-        rest = "".join(existing_lines[1:])
-    else:
-        shebang = "#!/usr/bin/env bash\n"
-        rest = existing
-    if rest.strip():
-        rest = "printf '%s' \"$GITLEAKS_STDIN\" | {\n" + rest.rstrip("\n") + "\n}\n"
-    return shebang + guard_block + "\n" + rest
 
 
 def _gitleaks_install_git_hooks(root: Path) -> None:
-    git_hooks_dir = root / ".git" / "hooks"
-    if not git_hooks_dir.exists():
-        print("  NOTE: .git/hooks/ not found — git hooks not installed (no git repo here?).")
+    git_hooks_dir = _git_hooks_dir_or_note(root)
+    if git_hooks_dir is None:
         return
-
-    hook_path = git_hooks_dir / "pre-push"
-    hook_script = _gitleaks_hook_script()
-    if hook_path.exists():
-        existing = hook_path.read_text(encoding="utf-8", errors="replace")
-        if _GITLEAKS_HOOK_MARKER_V1 in existing:
-            print("  git hook pre-push: tess-gitleaks-guard already v1 (skipped)")
-            return
-        updated = _gitleaks_splice_above_existing(existing)
-        print(
-            "  NOTICE: pre-existing pre-push hook detected — the local gitleaks guard "
-            "was spliced ABOVE it and FALLS THROUGH on a clean result (your hook still runs)."
-        )
-        hook_path.write_text(updated, encoding="utf-8")
-    else:
-        hook_path.write_text(hook_script, encoding="utf-8")
-    os.chmod(str(hook_path), 0o755)
-    print(f"  installed git pre-push hook (local gitleaks guard) at {hook_path}")
+    _install_guard_hook(
+        git_hooks_dir, "pre-push", _gitleaks_hook_script(), _GITLEAKS_HOOK_MARKER_V1,
+        _gitleaks_splice_above_existing,
+        "  git hook pre-push: tess-gitleaks-guard already v1 (skipped)",
+        "  NOTICE: pre-existing pre-push hook detected — the local gitleaks guard "
+        "was spliced ABOVE it and FALLS THROUGH on a clean result (your hook still runs).",
+        "  installed git pre-push hook (local gitleaks guard) at {hook_path}",
+    )
 
 
 def _cmd_gate_install_hooks(args, root: Path) -> None:
@@ -23943,7 +23731,7 @@ def cmd_trace(args, root: Path) -> None:
 # ===========================================================================
 
 
-class MissionError(Exception):
+class MissionError(TessUserError):
     """Raised for any MISSION LEDGER refusal or read failure — mission not
     found, invalid gate name, missing/nonexistent evidence, retry cap
     reached, same-brief non-transient retry, or an internal write that
@@ -23992,17 +23780,23 @@ def _validate_mission_id(mission_id: str) -> None:
     '<YYYY-MM-DD>-<slug>' path component (`_new_mission_id`) — requiring
     exactly one component with no '..' is not a functional restriction on
     any legitimate mission id, only a safety one."""
-    if not mission_id or not mission_id.strip():
-        raise MissionError("tessctl: mission id must not be empty")
-    if os.path.isabs(mission_id):
-        raise MissionError(
-            f"tessctl: invalid mission id {mission_id!r} — absolute paths are not allowed "
+    _validate_single_component_id(mission_id, err=MissionError, prefix="tessctl", noun="mission id")
+
+
+def _validate_single_component_id(value: str, *, err: type, prefix: str, noun: str) -> None:
+    """C1 containment for an id that becomes one path component: non-empty,
+    not absolute, exactly one component, not '.' or '..'. Raises `err`."""
+    if not value or not value.strip():
+        raise err(f"{prefix}: {noun} must not be empty")
+    if os.path.isabs(value):
+        raise err(
+            f"{prefix}: invalid {noun} {value!r} — absolute paths are not allowed "
             f"(C1 containment, fail-closed)"
         )
-    parts = Path(mission_id).parts
-    if len(parts) != 1 or mission_id in (".", ".."):
-        raise MissionError(
-            f"tessctl: invalid mission id {mission_id!r} — must be a single path component, "
+    parts = Path(value).parts
+    if len(parts) != 1 or value in (".", ".."):
+        raise err(
+            f"{prefix}: invalid {noun} {value!r} — must be a single path component, "
             f"no '/' and no '..' (C1 containment, fail-closed)"
         )
 
@@ -24923,7 +24717,7 @@ def _cmd_retry_migrate(args, root: Path) -> None:
 # ===========================================================================
 
 
-class RunError(Exception):
+class RunError(TessUserError):
     """Raised for any `tessctl run` refusal that stops the WHOLE run before
     (or outside of) the per-task typed-retry loop: an invalid crew-plan, a
     missing mission record, an unknown --driver, a circular depends_on
@@ -26936,7 +26730,7 @@ def cmd_run(args, root: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-class TaskError(Exception):
+class TaskError(TessUserError):
     """Raised for any TASK STORE refusal or read failure — unknown task id,
     an invalid/unsafe task id, a schema-invalid mutation, a CAS conflict, or
     an already-claimed task that is not stale (and no --force). Every
@@ -26945,7 +26739,7 @@ class TaskError(Exception):
     as a defense-in-depth backstop."""
 
 
-class LedgerError(Exception):
+class LedgerError(TessUserError):
     """Raised for any ACCOUNTABILITY LEDGER refusal or read failure — an
     unknown event class, an empty summary, a schema-invalid event, or a
     shard whose hash chain does not verify. Mirrors TaskError's same typed-
@@ -27068,19 +26862,7 @@ DEFAULT_CLAIM_STALE_SECONDS = 900
 # ---------------------------------------------------------------------------
 
 def _validate_task_id(task_id: str) -> None:
-    if not task_id or not task_id.strip():
-        raise TaskError("tessctl tasks: task id must not be empty")
-    if os.path.isabs(task_id):
-        raise TaskError(
-            f"tessctl tasks: invalid task id {task_id!r} — absolute paths are not allowed "
-            f"(C1 containment, fail-closed)"
-        )
-    parts = Path(task_id).parts
-    if len(parts) != 1 or task_id in (".", ".."):
-        raise TaskError(
-            f"tessctl tasks: invalid task id {task_id!r} — must be a single path component, "
-            f"no '/' and no '..' (C1 containment, fail-closed)"
-        )
+    _validate_single_component_id(task_id, err=TaskError, prefix="tessctl tasks", noun="task id")
 
 
 def _task_path(root: Path, task_id: str) -> Path:
@@ -28719,7 +28501,7 @@ AUDIT_PACK_SCHEMA = "tess-os.audit-pack/1"
 AUDIT_RECEIPT_SCHEMA_FILE = "agent-receipt.schema.json"
 
 
-class AuditError(Exception):
+class AuditError(TessUserError):
     """Raised for any AUDIT PACK refusal or read failure — an ambiguous or
     missing scope, an unreadable/invalid --receipt file, an --out target
     that already exists without --force, or a pack file that is not valid
@@ -28740,8 +28522,7 @@ def _audit_canonical_bytes(obj: dict, exclude_key: str) -> bytes:
     tamper check) — never to perform or verify a GPG signature itself; see
     the AUDIT PACK region banner above for why that step is deliberately
     delegated to tools/receipt-verify instead of duplicated here."""
-    payload = {k: v for k, v in obj.items() if k != exclude_key}
-    return json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    return _canonical_json_bytes(obj, exclude_key)
 
 
 def _audit_origin_from_shard_name(name: str) -> str:
@@ -29594,7 +29375,7 @@ def cmd_audit(args, root: Path) -> None:
 SKILL_SCAFFOLD_SCHEMA = "tess-os.skill-scaffold/1"
 
 
-class SkillError(Exception):
+class SkillError(TessUserError):
     """Raised for any `tessctl skill` refusal or read failure — an unknown
     task id, an `--out` target that resolves under `.claude/skills/` EITHER
     the in-repo, project-local one OR the operator's GLOBAL `~/.claude/
@@ -30184,7 +29965,7 @@ def cmd_skill(args, root: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-class MemoryAdoptError(Exception):
+class MemoryAdoptError(TessUserError):
     """Raised for any `tessctl memory adopt`/`--revert` refusal — an
     ambiguous existing symlink, a non-file entry in the source directory, a
     non-empty target without --merge, an unresolved merge conflict, a
@@ -32993,10 +32774,7 @@ def main() -> None:
                 fn(args, root)
         else:
             fn(args, root)
-    except (
-        GateError, MissionError, RunError, TaskError, LedgerError,
-        MemoryAdoptError, AuditError, SkillError,
-    ) as e:
+    except TessUserError as e:
         sys.exit(str(e))
 
 
