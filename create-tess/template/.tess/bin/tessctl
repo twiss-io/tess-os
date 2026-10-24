@@ -20096,11 +20096,49 @@ ANCHOR_HIDDEN = ("Tess's record of its approved safety files (in the .config/tes
 class AnchorState:
     """state: none (never anchored) | ok | mismatch | lost; problems: plain lines.
     hidden: a lost anchor whose store cannot be found although this checkout
-    is listed as anchored (ANCHOR_HIDDEN)."""
+    is listed as anchored (ANCHOR_HIDDEN). edited: a lost anchor whose record
+    is not signed by this computer's operator key (ANCHOR_EDITED)."""
 
-    def __init__(self, state: str, doc=None, problems=None, where: str = "", hidden: bool = False):
+    def __init__(self, state: str, doc=None, problems=None, where: str = "", hidden: bool = False,
+                 edited: bool = False):
         self.state, self.doc, self.problems, self.where = state, doc, problems or [], where
-        self.hidden = hidden
+        self.hidden, self.edited = hidden, edited
+
+
+ANCHOR_EDITED = ("Tess's record of its approved safety files is not signed by this computer's operator "
+                 "key (it was edited, copied from another computer or written by an older build), so "
+                 "Tess has stopped all actions. Run `tessctl anchor accept` in your own terminal to check "
+                 "the current files and record them again.")
+# 1.0.0 (section 2): anchor.json carries an HMAC-SHA256 over its canonical JSON
+# (every field but "mac") under the per-machine operator key
+# (~/.config/tess/operator/key under the OS user record's home, 32 random bytes,
+# 0600 in a 0700 folder, created by the first anchor write; never printed), with
+# its own domain prefix. A record without a valid MAC, or whose project_id is
+# not the project it was found for, is a stop. Kept identical in
+# .claude/hooks/run-pinned.py and .tess/bin/tessctl.
+ANCHOR_MAC_DOMAIN = b"tess-os enforcement anchor v1\0"
+
+
+def anchor_record_mac(key: bytes, doc: dict) -> str:
+    """The MAC of an anchor record: every field but "mac", canonical JSON."""
+    body = json.dumps({k: v for k, v in doc.items() if k != "mac"}, sort_keys=True,
+                      separators=(",", ":"), ensure_ascii=True)
+    return "hmac-sha256:" + hmac.new(key, ANCHOR_MAC_DOMAIN + body.encode("ascii"),
+                                     hashlib.sha256).hexdigest()
+
+
+def anchor_record_mac_problem(doc: dict, pid: str, key: "bytes | None", why_key: str) -> "str | None":
+    """None when the record is signed by `key` for project `pid`; else why not."""
+    if str(doc.get("project_id") or "") != pid:
+        return "the record names a different project"
+    mac = doc.get("mac")
+    if not isinstance(mac, str) or not mac.startswith("hmac-sha256:"):
+        return "the record is not signed (written by an older build, or edited)"
+    if key is None:
+        return f"the record is signed, but this computer's operator key cannot be used ({why_key})"
+    if not hmac.compare_digest(mac, anchor_record_mac(key, doc)):
+        return "the record's signature does not match (it was edited, or signed on another computer)"
+    return None
 
 
 def _anchor_tess_dir() -> Path:
@@ -20472,6 +20510,10 @@ def _anchor_state(root: Path) -> AnchorState:
         return AnchorState("lost", problems=[str(e)])
     if doc.get("format") != ANCHOR_FORMAT or not isinstance(doc.get("files"), dict):
         return AnchorState("lost", problems=["the anchor has an unknown format"])
+    key, why_key = _operator_key(root, create=False)
+    why = anchor_record_mac_problem(doc, pid, key, why_key)
+    if why:
+        return AnchorState("lost", problems=[why], where=str(pdir / "anchor.json"), edited=True)
     problems = []
     for rel, rec in sorted(doc["files"].items()):
         want = rec.get("sha256") if isinstance(rec, dict) else None
@@ -20570,7 +20612,7 @@ def _anchor_write(root: Path, source: str, carry: dict | None = None,
     now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     doc = {"format": ANCHOR_FORMAT, "project_id": pid, "project_path": os.path.realpath(str(root)),
            "release": version, "source": source, "written_at": now, "files": files}
-    _anchor_write_private(pdir / "anchor.json", (json.dumps(doc, indent=1, sort_keys=True) + "\n").encode())
+    _anchor_write_private(pdir / "anchor.json", _anchor_record_bytes(root, doc))
     _anchor_write_private(pdir / "expected.json",
                           (json.dumps({"format": ANCHOR_FORMAT, "project_id": pid}) + "\n").encode())
     marker = {"format": ANCHOR_FORMAT, "project_id": pid, "path": os.path.realpath(str(root))}
@@ -20579,12 +20621,25 @@ def _anchor_write(root: Path, source: str, carry: dict | None = None,
     return pdir / "anchor.json"
 
 
+def _anchor_record_bytes(root: Path, doc: dict) -> bytes:
+    """`doc` signed with the operator key (created on first use, 0600 in a
+    0700 folder under the OS user record's home), as anchor.json bytes.
+    Raises ValueError when the key cannot be made or used."""
+    key, why = _operator_key(root, create=True)
+    if key is None:
+        raise ValueError(f"cannot sign the record with this computer's operator key ({why})")
+    doc = dict(doc)
+    doc["mac"] = anchor_record_mac(key, doc)
+    return (json.dumps(doc, indent=1, sort_keys=True) + "\n").encode()
+
+
 def _anchor_findings(root: Path) -> list:
     """doctor / verify: plain lines, empty when the anchor matches or there is none."""
     st = _anchor_state(root)
     if st.state in ("none", "ok"):
         return []
-    head = ANCHOR_STOP if st.state == "mismatch" else ANCHOR_HIDDEN if st.hidden else (
+    head = ANCHOR_STOP if st.state == "mismatch" else ANCHOR_HIDDEN if st.hidden else \
+        ANCHOR_EDITED if st.edited else (
         "Tess's record of its approved safety files is missing or unreadable, so Tess has "
         "stopped all actions. Run `tessctl anchor accept` in your own terminal.")
     return [head] + [f"  - {p}" for p in st.problems]

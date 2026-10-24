@@ -177,7 +177,7 @@ def test_an_older_anchor_records_it_on_the_next_verified_update(anchored, engine
     st = engine._anchor_state(root)
     doc = dict(st.doc)
     doc["files"] = {k: v for k, v in doc["files"].items() if k != LOCAL}
-    engine._anchor_write_private(type(root)(st.where), (json.dumps(doc) + "\n").encode())
+    engine._anchor_write_private(type(root)(st.where), engine._anchor_record_bytes(root, doc))
     _write(root, {"disableAllHooks": True})
     assert engine._anchor_state(root).state == "ok", "an older anchor has no record of it"
     os.unlink(root / LOCAL)
@@ -226,7 +226,7 @@ def test_a_first_record_names_an_enforcing_key_loudly(anchored, engine, capsys):
     st = engine._anchor_state(root)
     doc = dict(st.doc)
     doc["files"] = {k: v for k, v in doc["files"].items() if k != LOCAL}
-    engine._anchor_write_private(type(root)(st.where), (json.dumps(doc) + "\n").encode())
+    engine._anchor_write_private(type(root)(st.where), engine._anchor_record_bytes(root, doc))
     _write(root, {"disableAllHooks": True, "permissions": {"allow": ["Bash(ls)"]}})
     engine._anchor_after_release(root, "update")
     out = capsys.readouterr().out
@@ -249,7 +249,7 @@ def test_a_first_record_of_rules_only_stays_quiet(anchored, engine, capsys):
     st = engine._anchor_state(root)
     doc = dict(st.doc)
     doc["files"] = {k: v for k, v in doc["files"].items() if k != LOCAL}
-    engine._anchor_write_private(type(root)(st.where), (json.dumps(doc) + "\n").encode())
+    engine._anchor_write_private(type(root)(st.where), engine._anchor_record_bytes(root, doc))
     _write(root, {"permissions": {"allow": ["Bash(ls)"]}})
     engine._anchor_after_release(root, "update")
     assert "WARNING" not in capsys.readouterr().out

@@ -134,7 +134,7 @@ def test_an_older_anchor_records_it_on_the_next_verified_update(anchored, engine
     st = engine._anchor_state(root)
     doc = dict(st.doc)
     doc["files"] = {k: v for k, v in doc["files"].items() if k != MCP}
-    engine._anchor_write_private(type(root)(st.where), (json.dumps(doc) + "\n").encode())
+    engine._anchor_write_private(type(root)(st.where), engine._anchor_record_bytes(root, doc))
     _write(root, SERVER)
     assert engine._anchor_state(root).state == "ok", "an older anchor has no record of it"
     engine._anchor_after_release(root, "update")

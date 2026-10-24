@@ -248,7 +248,7 @@ def test_an_older_anchor_records_the_manifest_on_the_next_verified_update(anchor
     st = engine._anchor_state(root)
     doc = dict(st.doc)
     doc["files"] = {k: v for k, v in doc["files"].items() if k != MANIFEST}
-    engine._anchor_write_private(Path(st.where), (json.dumps(doc) + "\n").encode())
+    engine._anchor_write_private(Path(st.where), engine._anchor_record_bytes(root, doc))
     assert engine._anchor_state(root).state == "ok"
     engine._anchor_after_release(root, "update")
     assert MANIFEST in engine._anchor_state(root).doc["files"]

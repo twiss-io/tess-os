@@ -630,11 +630,27 @@ security reviews; they are stated so nobody relies on a check that is not there.
   back; `tessctl doctor` / `verify` / `anchor status` and `scripts/tess
   hooks-status` report the difference. The gate also refuses the routes above
   directly (defence in depth), and denies writes, not only reads, under
-  `~/.config/tess`. What this does not stop: a process running as the same OS
-  user can still rewrite the anchor itself (the gate refuses that to the agent's
-  tools, but a program built at run time is not seen), so the anchor turns a
-  silent rollback into a loud, fail-closed stop; it is not an operating-system
-  boundary. A checkout that was never anchored gets none of this: installs made
+  `~/.config/tess`. The record is signed (1.0.0): `anchor.json` carries an
+  HMAC-SHA256 over its whole content under this computer's operator key
+  (`~/.config/tess/operator/key` under the OS user record's home: 32 random
+  bytes, mode 0600 in a 0700 folder, made by the first anchor write, never
+  printed or committed; the same key signs operator push and policy
+  approvals, with a different domain prefix). A record that was edited, lost
+  its signature, names another project, was signed on another computer, or
+  cannot be checked because the key is missing or readable by others, stops
+  Tess with its own message until `tessctl anchor accept` signs a fresh one.
+  This catches a hand edit, a record restored from another computer, a backup
+  or a sync service, and a tool that can write the anchor folder but cannot
+  read the key. What this does not stop: a process running as the same OS user
+  can read the key and so sign a record, or rewrite the files the anchor
+  checks and then the anchor itself (the gate refuses both to the agent's
+  tools, but a program built at run time is not seen); and an older record
+  this computer signed for the same project can be put back (there is no
+  counter outside the user's reach). So the anchor turns a silent rollback
+  into a loud, fail-closed stop; it is not an operating-system boundary.
+  Anchors written by builds before the signature (development and release
+  candidates only; no released version wrote one) stop once and need one
+  `tessctl anchor accept`. A checkout that was never anchored gets none of this: installs made
   before v1.0.0 stay unanchored until a `tessctl update` or `self-update` run by
   a v1.0.0-or-later `tessctl` records one (an older engine's update does not
   know about the anchor), or until the operator runs `tessctl anchor init`,
