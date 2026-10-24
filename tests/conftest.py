@@ -634,8 +634,18 @@ def _suite_os_home() -> None:
         fh.write(home + "\n")
     with open(os.path.join(purelib, "tess_test_os_home.pth"), "w", encoding="utf-8") as fh:
         fh.write("import tess_test_os_home\n")
+    inherited = os.environ.get("TESS_TEST_SUITE_VENV")
     os.environ["TESS_TEST_SUITE_VENV"] = venv
-    os.environ.setdefault("TESS_TEST_OS_HOME", home)
+    if inherited or os.environ.get("PYTEST_XDIST_WORKER"):
+        # E8: a pytest-xdist worker inherits the controller's TESS_TEST_OS_HOME but is started by
+        # the original interpreter, so it builds its own venv, whose .pth (what every `python3 -I`
+        # hook sees with a scrubbed env) names THIS home. Keeping the controller's value gave one
+        # process two OS homes: a hook judged a different ~/.config/tess than the test named, and
+        # hooks started with the inherited env shared the controller's home (and its anchors,
+        # keyed by root commit) with every other worker. One home per worker, the same both ways.
+        os.environ["TESS_TEST_OS_HOME"] = home
+    else:
+        os.environ.setdefault("TESS_TEST_OS_HOME", home)
     os.environ["PATH"] = bindir + os.pathsep + os.environ.get("PATH", "")
     sys.executable = py
     real = pwd.getpwuid

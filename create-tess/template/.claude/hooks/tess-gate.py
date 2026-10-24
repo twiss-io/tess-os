@@ -34,7 +34,11 @@ features"), so every ask is sent as a deny whose reason tells the user to run
 the command themselves. A payload carrying `turn_id` is treated as Codex even
 without `--runtime codex` (same test as the machine-level git-guard).
 
-Fail closed: unreadable input or an internal error denies the call.
+Fail closed: unreadable input or an internal error denies the call, in Claude
+Code too (a deny, not an ask). E8: so does a stop signal (SIGTERM, SIGHUP,
+SIGINT) or any exception that escapes, and the budget is checked inside every
+loop that grows with the input; run-pinned.py turns a crash, a kill or an
+overrun of this process into a block (exit 2).
 
 Audit trail: every deny/ask is appended (redacted, one JSON line) to
 $TESS_GATE_LOG, default ${XDG_CACHE_HOME:-~/.cache}/tess/gate-decisions.log
@@ -144,8 +148,9 @@ command text, so a write assembled at run time (`$(...)`, variables), a
 script file run by an interpreter, or an interpreter write this pattern
 match misses is not seen; hosted tools never reach hooks; Codex `write_stdin`
 (typed input to an already-open unified-exec shell) never reaches
-PreToolUse; a hook that times out or crashes in the host fails open for that
-call. The ship-gate in git/CI stays the wall; this gate is the in-session
+PreToolUse; the launcher process itself being killed, or the host stalling
+before it starts, still fails open in Codex and in Claude Code before 2.1.295
+(2.1.295+ honours "onFailure": "block" in .claude/settings.json). The ship-gate in git/CI stays the wall; this gate is the in-session
 guard in front of it.
 """
 
@@ -400,6 +405,7 @@ def _parse_security_tier(text: str) -> set:
     entries: dict = {}
     section = key = None
     for raw in text.splitlines():
+        _tick()  # E8: budget check per iteration
         if raw and not raw.startswith((" ", "#")):
             section, key = raw.split(":", 1)[0].strip(), None
             continue
@@ -420,6 +426,7 @@ def _parse_security_tier(text: str) -> set:
 def _glob_hit(rel: str, globs) -> str | None:
     low = rel.lower()  # macOS/Windows file systems are case-insensitive
     for g in globs:
+        _tick()  # E8: budget check per iteration
         gl = g.lower()
         if gl.endswith("/**"):
             base = gl[:-3]
@@ -454,6 +461,7 @@ def _split_existing(path: str) -> tuple:
     components below it])."""
     p, tail = path, []
     while _stat_id(p) is None:
+        _tick()  # E8: budget check per iteration
         parent = os.path.dirname(p)
         if parent == p:
             return p, tail
@@ -474,6 +482,7 @@ def _within(real: str, base: str) -> str | None:
     want = [c.lower() for c in btail]
     p, tail = real, []
     while True:
+        _tick()  # E8: budget check per iteration
         if _stat_id(p) == aid:
             if [c.lower() for c in tail[:len(want)]] == want and len(tail) >= len(want):
                 return "/".join(tail[len(want):]) or "."
@@ -494,6 +503,7 @@ def _is_above(real: str, base: str, floor: str) -> bool:
         return b.startswith(low + os.sep) and low.startswith(f + os.sep)
     between, p = [], os.path.dirname(base)
     while True:
+        _tick()  # E8: budget check per iteration
         pid = _stat_id(p)
         if pid == fid:
             return rid in between
@@ -556,6 +566,7 @@ def _git_includes(cfg: str) -> list:
         return out
     section = ""
     for line in text.splitlines():
+        _tick()  # E8: budget check per iteration
         s = line.strip()
         m = re.match(r"^\[\s*([A-Za-z]+)", s)
         if m:
@@ -608,6 +619,7 @@ def _control_list(root: Path) -> list:
               ("/etc/codex", "the managed Codex settings")]
     for cfg in [f for f, label in files if label.endswith("git config")] + [
             os.path.join(str(root), ".git", "config")]:
+        _tick()  # E8: budget check per iteration
         files += [(inc, "a file your git config includes") for inc in _git_includes(cfg)]
     return files
 
@@ -626,6 +638,7 @@ def control_file_hit(root: Path, cwd: str, path: str) -> str | None:
     for f, fr, label in _control_files(root):
         # The file itself, a file inside a control directory, or (below the
         # home directory) a directory that holds one: `mv ~/.codex x`.
+        _tick()  # E8: budget check per iteration
         if _within(real, fr) is not None or any(_is_above(real, fr, h) for h in homes):
             return _control_label(f, label)
     return None
@@ -691,6 +704,7 @@ def key_hit(cwd: str, path: str, ancestors: bool = False) -> str | None:
             # v1.0 audit: by identity, so a case variant (`~/.CONFIG/TESS`), a
             # symlinked or `..` spelling, or another path to the same
             # directory is the key directory too.
+            _tick()  # E8: budget check per iteration
             if _within(c, d) is not None:
                 return d
             # A search (or a move) rooted between the home directory and the
@@ -715,14 +729,17 @@ def _check_key_text(cwd: str, argv: list, raw: str, v, ctx: "_Ctx | None" = None
                          "ditto", "pax", "cpio") or \
         any(re.match(r"^-[A-Za-z]*[rR]", a) for a in argv[1:])
     for a in argv[1:]:
+        _tick()  # E8: budget check per iteration
         parts = {a, a.split("=", 1)[-1]}
         # v1.0 round 2 (Cyra L1): the text the shell builds (`~/$a/tess`,
         # `${H}fig/tess`, `~/.config/{tess,x}`) reaches it too.
         vals, _ = _word_values(a, cwd, ctx) if ctx is not None and isinstance(a, _Word) else (None, "")
         for text, _pat in vals or []:
+            _tick()  # E8: budget check per iteration
             if text != str(a):
                 parts |= {text, text.split("=", 1)[-1]}
         for part in parts:
+            _tick()  # E8: budget check per iteration
             globbed = _glob(cwd, part) if any(c in part for c in "*?[") else _Matches()
             if _KEY_TEXT.search(part) or key_hit(cwd, part, ancestors=recursive) or any(
                     key_hit(cwd, g) for g in globbed):
@@ -745,6 +762,7 @@ def _shell_glob(pat: str) -> str:
         return pat
     out, i, n = [], 0, len(pat)
     while i < n:
+        _tick()  # E8: budget check per iteration
         c = pat[i]
         if c != "[":
             out.append(c)
@@ -757,6 +775,7 @@ def _shell_glob(pat: str) -> str:
         if j < n and pat[j] == "]":
             j += 1
         while j < n and pat[j] != "]":
+            _tick()  # E8: budget check per iteration
             if pat[j] == "[" and j + 1 < n and pat[j + 1] in ":=.":
                 end = pat.find(pat[j + 1] + "]", j + 2)
                 if end < 0:
@@ -801,6 +820,8 @@ def _glob(cwd: str, pattern: str, limit: "int | None" = None) -> "_Matches":
             found, cut = _glob_recursive(pat, limit)
         else:
             found, cut = _glob_segments(pat, limit)
+    except _GateTimeout:  # E8: out of time is the gate's ASK, not "could not list"
+        raise
     except Exception:
         found, cut = [], True  # could not list: unsure, never "nothing there"
     out.extend(found[:limit])
@@ -815,9 +836,11 @@ def _glob_segments(pat: str, limit: int) -> tuple:
     segs = [x for x in segs[1:] if x] if pat.startswith(os.sep) else [x for x in segs if x]
     paths, budget, cut = [os.sep], [_GLOB_WALK_LIMIT], False
     for n, seg in enumerate(segs):
+        _tick()  # E8: budget check per iteration
         last = n == len(segs) - 1
         nxt = []
         for p in paths:
+            _tick()  # E8: budget check per iteration
             if not _GLOB_CHARS.search(seg):
                 q = os.path.join(p, seg)
                 if os.path.lexists(q) if last and not trail else os.path.isdir(q):
@@ -826,6 +849,7 @@ def _glob_segments(pat: str, limit: int) -> tuple:
             try:
                 with os.scandir(p) as it:
                     for e in it:
+                        _tick()  # E8: budget check per iteration
                         budget[0] -= 1
                         if budget[0] < 0:
                             return nxt, True
@@ -872,7 +896,9 @@ def _glob_recursive(pat: str, limit: int) -> tuple:
         return [], False
     for dirpath, dirnames, filenames in os.walk(head, followlinks=False,
                                                 onerror=lambda e: (_ for _ in ()).throw(e)):
+        _tick()  # E8: budget check per iteration
         for n in dirnames + filenames:
+            _tick()  # E8: budget check per iteration
             budget -= 1
             if budget < 0:
                 return out[:limit], True
@@ -898,6 +924,7 @@ def _link_crossed(names: list, pats: list, trail: bool) -> bool:
     follows. Without globstar, bash reads `**` and `***` as `*`, one step
     that names whatever it matches, links included."""
     for i, p in enumerate(pats):
+        _tick()  # E8: budget check per iteration
         if p == "***" and _parts_match(names, pats[:i + 1]) == "full":
             return True  # `***/` follows links: it crosses this one
         one = "*" if p in ("**", "***") else p  # bash without globstar: one step
@@ -1018,6 +1045,7 @@ def _field(text: str, pat: str | None = None) -> "_Field":
 def _close_quote(s: str, i: int) -> int:
     """Index of the `"` closing a double-quoted string whose text starts at i."""
     while i < len(s):
+        _tick()  # E8: budget check per iteration
         c = s[i]
         if c == "\\":
             i += 2
@@ -1035,6 +1063,7 @@ def _close_quote(s: str, i: int) -> int:
 def _close_backtick(s: str, i: int) -> int:
     j = i + 1
     while j < len(s):
+        _tick()  # E8: budget check per iteration
         if s[j] == "\\":
             j += 2
             continue
@@ -1048,6 +1077,7 @@ def _close_paren(s: str, i: int) -> int:
     """Index of the `)` closing the `(` at s[i] (quotes and nesting respected)."""
     depth, j = 0, i
     while j < len(s):
+        _tick()  # E8: budget check per iteration
         c = s[j]
         if c == "\\":
             j += 2
@@ -1074,6 +1104,7 @@ def _close_paren(s: str, i: int) -> int:
 def _close_brace(s: str, i: int) -> int:
     depth, j = 0, i
     while j < len(s):
+        _tick()  # E8: budget check per iteration
         c = s[j]
         if c == "\\":
             j += 2
@@ -1111,6 +1142,7 @@ def _ansi_c(s: str, i: int) -> tuple:
     the text is then bash's reading."""
     out, amb = [], False
     while i < len(s):
+        _tick()  # E8: budget check per iteration
         c = s[i]
         if c == "'":
             return i + 1, "".join(out), amb
@@ -1200,6 +1232,7 @@ def _scan_dollar(s: str, i: int, add, quoted: bool) -> int:
 def _scan_dquote(s: str, i: int, add) -> int:
     add("lit", "")  # "" is still a word
     while i < len(s):
+        _tick()  # E8: budget check per iteration
         c = s[i]
         if c == '"':
             return i + 1
@@ -1223,10 +1256,12 @@ def _read_heredocs(s: str, i: int, toks: list, docs: list) -> int:
     """Attach each pending here-document body (the lines after the newline at
     i, up to its delimiter) to its delimiter word; returns where commands resume."""
     for idx, strip in docs:
+        _tick()  # E8: budget check per iteration
         if idx >= len(toks) or toks[idx].op:
             continue  # `<<` with no delimiter word: a syntax error, nothing runs
         delim, lines = str(toks[idx]), []
         while i < len(s):
+            _tick()  # E8: budget check per iteration
             j = s.find("\n", i)
             j = len(s) if j < 0 else j
             line, i = s[i:j], min(j + 1, len(s))
@@ -1289,6 +1324,7 @@ def _scan(cmd: str) -> list:
 
     i = 0
     while i < len(cmd):
+        _tick()  # E8: budget check per iteration
         c = cmd[i]
         if c in " \t\r":
             end()
@@ -1355,6 +1391,7 @@ def _events(cmd: str) -> list:
     stay inside their segment."""
     out, cur = [], []
     for tok in _scan(cmd):
+        _tick()  # E8: budget check per iteration
         if tok.op and tok in OPERATORS:
             if cur:
                 out.append(("seg", cur))
@@ -1455,6 +1492,7 @@ def _skip_options(argv: list, i: int, prog: str) -> tuple:
     chdir = split = None
     split_word = None
     while i < len(argv):
+        _tick()  # E8: budget check per iteration
         a = str(argv[i])
         if a == "--":
             i += 1
@@ -1477,6 +1515,7 @@ def _skip_options(argv: list, i: int, prog: str) -> tuple:
             continue
         if a.startswith("-") and len(a) > 1 and not a[1:].isdigit():
             for k, ch in enumerate(a[1:], 1):
+                _tick()  # E8: budget check per iteration
                 if ch in shorts:
                     val, word = a[k + 1:], _sub_word(argv[i], k + 1)
                     if not val:
@@ -1506,6 +1545,7 @@ def _resolve(argv: list) -> "_Cmd":
     res, i, guard = _Cmd(), 0, 0
     argv = list(argv)
     while i < len(argv) and guard < 64:
+        _tick()  # E8: budget check per iteration
         guard += 1
         tok = argv[i]
         low = os.path.basename(str(tok)).lower()
@@ -1561,6 +1601,7 @@ def _next_program(argv: list, j: int) -> int:
     if j >= len(argv) or _interesting(argv[j]) or re.match(r"^[A-Za-z_][A-Za-z0-9_]*\+?=", str(argv[j])):
         return j
     for k in range(j + 1, len(argv)):
+        _tick()  # E8: budget check per iteration
         if _interesting(argv[k]) and not _is_op(argv[k]):
             return k
     return j
@@ -1581,6 +1622,7 @@ def _string_runner(argv: list, i: int, low: str, res: "_Cmd") -> bool:
         return True
     if flag is not None:
         for k, a in enumerate(rest):
+            _tick()  # E8: budget check per iteration
             if (a == flag or (flag == "-c" and re.fullmatch(r"-[A-Za-z]*c", a))) and k + 1 < len(rest):
                 res.inner.append(rest[k + 1])
                 return True
@@ -1689,6 +1731,7 @@ def _opt_given(words: list, opts: tuple) -> bool:
     """One of the long options `opts` is among `words`, spelled out or as a
     prefix argparse would expand (`--forc`, `--regen=x`)."""
     for w in words:
+        _tick()  # E8: budget check per iteration
         if w == "--":
             return False
         name = w.split("=", 1)[0]
@@ -1741,12 +1784,14 @@ def _vault_consumer(argv: list) -> list:
     (`env VAR=x`, `nice`, `timeout 5`, `sudo`)."""
     i = 0
     while i < len(argv):
+        _tick()  # E8: budget check per iteration
         name = os.path.basename(_unquote(argv[i])).lower()
         if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", argv[i]):
             i += 1
         elif name == "env":
             j = i + 1
             while j < len(argv) and (argv[j].startswith("-") or re.match(r"^[A-Za-z_]\w*=", argv[j])):
+                _tick()  # E8: budget check per iteration
                 j += 1
             if j >= len(argv):
                 return argv[i:]  # a bare `env` prints the whole environment
@@ -1754,6 +1799,7 @@ def _vault_consumer(argv: list) -> list:
         elif name in _VAULT_RUNNERS:
             i += 1
             while i < len(argv) and (argv[i].startswith("-") or re.match(r"^[0-9.]+[smhd]?$", argv[i])):
+                _tick()  # E8: budget check per iteration
                 i += 1
         else:
             break
@@ -1764,6 +1810,7 @@ def _vault_exec_parts(words: list) -> tuple:
     """(the --as names, the consumer argv) of the words after `vault exec`."""
     as_names, i = [], 0
     while i < len(words):
+        _tick()  # E8: budget check per iteration
         w = words[i]
         if w == "--":
             return as_names, words[i + 1:]
@@ -1804,6 +1851,7 @@ def _expanded_words(argv: list, cwd, ctx) -> list:
     Tess can know it (else the word as written)."""
     out = []
     for a in _operands(argv):
+        _tick()  # E8: budget check per iteration
         cands = None
         if ctx is not None and _dynamic(a):
             try:
@@ -1870,6 +1918,7 @@ def _operator_pipelines(cmd: str) -> list | None:
             continue
         pipes, cur, seg = [], [], []
         for tok in toks + [";"]:
+            _tick()  # E8: budget check per iteration
             if tok in ("|", "|&"):
                 cur, seg = cur + [seg], []
             elif tok in OPERATORS:
@@ -1892,12 +1941,14 @@ def _tessctl_call(argv: list) -> list | None:
     if INTERPRETERS.match(name) or name in SHELLS:
         i = 1
         while i < len(argv) and argv[i].startswith("-") and argv[i] not in ("-c", "-e", "-"):
+            _tick()  # E8: budget check per iteration
             i += 2 if argv[i] in ("-W", "-X", "-m") else 1
         if i < len(argv) and _is_tessctl(argv[i]):
             return argv[i + 1:]
         return None
     if name in _RUNNERS:
         for j, a in enumerate(argv[1:], 1):
+            _tick()  # E8: budget check per iteration
             if _is_tessctl(a) or re.search(r"(?i)tessctl", _unquote(a)):
                 return argv[j + 1:] if _is_tessctl(a) else _unquote(a).split()
     return None
@@ -1910,10 +1961,13 @@ def _check_operator_only(cmd: str, v) -> None:
     if pipes is None:  # unparseable: judge the words after each `tessctl` in the plain text
         words = re.split(r"[\s;&|()<>]+", flat)
         for i, w in enumerate(words):
+            _tick()  # E8: budget check per iteration
             if _is_tessctl(w):
                 _check_vault(words[i + 1:], v)
     for pipe in pipes or []:
+        _tick()  # E8: budget check per iteration
         for k, seg in enumerate(pipe):
+            _tick()  # E8: budget check per iteration
             _, argv = _strip_prefix(seg)
             words = _tessctl_call(argv)
             name = os.path.basename(argv[0]).lower() if argv else ""
@@ -1975,10 +2029,12 @@ def _short_flags(args: list) -> str:
 
 def _commit_no_verify(args: list) -> bool:
     for a in args:
+        _tick()  # E8: budget check per iteration
         if a == "--":
             break
         if re.match(r"^-[A-Za-z]+$", a):
             for ch in a[1:]:
+                _tick()  # E8: budget check per iteration
                 if ch == "n":
                     return True
                 if ch in "mFCctS":  # takes a value: the rest of the cluster is that value
@@ -2004,6 +2060,7 @@ def _word_shape(word, ctx: "_Ctx") -> tuple:
         return False, False
     one, lead = True, None
     for n, (k, t) in enumerate(word.parts):
+        _tick()  # E8: budget check per iteration
         q, known, safe = _part_quoted(word, n), None, False
         if k in ("lit", "raw"):
             try:
@@ -2086,6 +2143,7 @@ def _check_git_unknown(argv: list, v: "Verdict") -> None:
 
     i = 0
     while i < len(args):
+        _tick()  # E8: budget check per iteration
         a = args[i]
         if unknown(a):
             m = re.match(r"^(--?[A-Za-z][\w-]*)=", a.prefix)
@@ -2112,6 +2170,7 @@ def _check_git_unknown(argv: list, v: "Verdict") -> None:
     if sub == "config":
         key = None
         for k, a in enumerate(rest):
+            _tick()  # E8: budget check per iteration
             prev = rest[k - 1] if k else ""
             if unknown(a):
                 if key is None and prev in ("--file", "-f", "--blob"):
@@ -2133,6 +2192,7 @@ def _check_git_unknown(argv: list, v: "Verdict") -> None:
         _check_git_unknown_rest(sub, rest, v)
         return
     for k, a in enumerate(rest):
+        _tick()  # E8: budget check per iteration
         if a == "--" and not isinstance(a, _Unk):
             return
         if not unknown(a):
@@ -2181,6 +2241,7 @@ def _check_git_unknown_rest(sub: str, rest: list, v: "Verdict") -> None:
         return
     shorts, longs = _GIT_STRICT_VALUES.get(sub, ("", ()))
     for k, a in enumerate(rest):
+        _tick()  # E8: budget check per iteration
         if a == "--" and not isinstance(a, _Unk):
             if not strict:
                 return
@@ -2206,6 +2267,7 @@ def _check_git_words(root: Path, cwd: str, env: dict, argv: list, v: "Verdict", 
     what stays unknown goes to _check_git_unknown."""
     env = dict(env)
     for w in prefix_words:  # GIT_CONFIG_KEY_0=$K git ...
+        _tick()  # E8: budget check per iteration
         m = None if _is_op(w) else _ASSIGN.match(str(w))
         if m and m.group(1).startswith("GIT_") and _dynamic(w):
             cands, _ = _word_values(_sub_word(w, m.end()), cwd, ctx, assign=True)
@@ -2216,6 +2278,7 @@ def _check_git_words(root: Path, cwd: str, env: dict, argv: list, v: "Verdict", 
                            "runs, so Tess cannot check it does not switch off Tess's git hooks")
     per_word = []
     for w in argv[1:]:
+        _tick()  # E8: budget check per iteration
         if _is_op(w) or not isinstance(w, _Word):
             per_word.append([[str(w)]])
             continue
@@ -2225,10 +2288,12 @@ def _check_git_words(root: Path, cwd: str, env: dict, argv: list, v: "Verdict", 
             continue
         alts = []
         for cand in cands:
+            _tick()  # E8: budget check per iteration
             fields = []
             for text, pat in cand:
                 # `touch ./--no-verify; git commit *`: a glob can name a file
                 # that git reads as an option.
+                _tick()  # E8: budget check per iteration
                 risky = pat is not None and pat[:1] in "*?[" and (ctx.mutated or _any_glob(
                     cwd, pat, lambda g: os.path.basename(g).startswith("-")))
                 fields.append(_unk(_plain(text), ctx, unsafe=True) if risky else text)
@@ -2236,11 +2301,13 @@ def _check_git_words(root: Path, cwd: str, env: dict, argv: list, v: "Verdict", 
         per_word.append(alts or [[]])
     variants = [[]]
     for alts in per_word:
+        _tick()  # E8: budget check per iteration
         if len(variants) * len(alts) > 16:
             v.add(ASK, "its git arguments can take more values than Tess checks one by one")
             return
         variants = [a + b for a in variants for b in alts]
     for var in variants:
+        _tick()  # E8: budget check per iteration
         gargv = [argv[0]] + var
         _check_git_unknown(gargv, v)
         _check_git(root, cwd, env, gargv, v, raw, depth)
@@ -2250,6 +2317,7 @@ def _check_git(root: Path, cwd: str, env: dict, argv: list, v: Verdict, raw: str
     args = argv[1:]
     cfg, i, gcwd, redirect, cenv = [], 0, cwd, None, []
     while i < len(args) and args[i].startswith("-"):
+        _tick()  # E8: budget check per iteration
         a = args[i]
         if a.split("=", 1)[0] in ("--work-tree", "--git-dir"):
             redirect = a.split("=", 1)[0]
@@ -2309,6 +2377,7 @@ def _check_git(root: Path, cwd: str, env: dict, argv: list, v: Verdict, raw: str
                    "what a remote holds")
     if sub in ("rm", "mv"):
         for a in rest:
+            _tick()  # E8: budget check per iteration
             hit = not a.startswith("-") and protected_hit(root, gcwd, a)
             if hit:
                 v.add(DENY, f"it removes or moves {a}, a protected Tess path ({hit})", "protected")
@@ -2388,6 +2457,7 @@ def _check_git_cmd_values(root: Path, cwd: str, env: dict, cfg: list, v: Verdict
                if k in ("GIT_EXTERNAL_DIFF", "GIT_PAGER", "GIT_EDITOR", "GIT_SEQUENCE_EDITOR",
                         "GIT_SSH_COMMAND", "GIT_SSH", "GIT_ASKPASS", "GIT_PROXY_COMMAND")]
     for val in values:
+        _tick()  # E8: budget check per iteration
         if depth < 4 and val.strip():
             check_command(root, cwd, val, v, depth + 1)
     if any(c.split("=", 1)[0].lower().startswith("core.fsmonitor") and c.split("=", 1)[-1].lower() not in
@@ -2438,6 +2508,7 @@ def _check_git_file_opts(sub: str, opts: list, v: Verdict):
     """H-A: git options that write the command's output to a file (any path,
     hooks and settings included) or run an external diff/text-conversion."""
     for i, a in enumerate(opts):
+        _tick()  # E8: budget check per iteration
         hit = _abbrev(a, *_GIT_FILE_OPTS)
         if hit:
             v.add(DENY, f"`{a}` ({hit}) makes git write a file or run an external program; "
@@ -2447,6 +2518,7 @@ def _check_git_file_opts(sub: str, opts: list, v: Verdict):
             v.add(DENY, "`git grep -O` runs a program on the matching files", "gitfile")
         if sub in _GIT_SHORT_O_SUBS and re.match(r"^-[A-Za-z]", a) and not a.startswith("--"):
             for ch in a[1:]:
+                _tick()  # E8: budget check per iteration
                 if ch == "o":
                     v.add(DENY, f"`{a}` (-o) makes git write its output to a file or directory",
                           "gitfile")
@@ -2504,6 +2576,7 @@ def _git_unanswered(cwd: str) -> bool:
     repository the git command fails on its own."""
     p = os.path.abspath(cwd)
     while True:
+        _tick()  # E8: budget check per iteration
         if os.path.lexists(os.path.join(p, ".git")):
             break
         parent = os.path.dirname(p)
@@ -2541,6 +2614,7 @@ def _changed_protected(root: Path, cwd: str, a: str | None, b: str, specs=()) ->
         return None
     globs, hits = _protected_globs(root), []
     for name in out.split("\0"):
+        _tick()  # E8: budget check per iteration
         rel = name and _rel_to_root(root, top.strip(), name)
         if rel and _glob_hit(rel, globs) and rel not in hits:
             hits.append(rel)
@@ -2578,6 +2652,7 @@ def _parse(rest: list, short_vals: str = "", long_vals: tuple = ()) -> tuple:
     that takes a value keeps it (`-b name`, `-sREV`, `--source REV`)."""
     opts, pos, after, dd, i = {}, [], [], False, 0
     while i < len(rest):
+        _tick()  # E8: budget check per iteration
         a = rest[i]
         if dd:
             after.append(a)
@@ -2593,6 +2668,7 @@ def _parse(rest: list, short_vals: str = "", long_vals: tuple = ()) -> tuple:
                 opts[full or name] = val if eq else True
         elif a.startswith("-") and len(a) > 1:
             for k, ch in enumerate(a[1:], 1):
+                _tick()  # E8: budget check per iteration
                 if ch in short_vals:
                     val = a[k + 1:]
                     if not val and i + 1 < len(rest):
@@ -2617,6 +2693,7 @@ def _restore_from(root: Path, cwd: str, source, specs: list, v: Verdict, what: s
     if source is None or source is True or source in _SAME_SOURCE or not specs:
         return
     for s in specs:
+        _tick()  # E8: budget check per iteration
         hit = _pathspec_hit(root, cwd, s)
         if hit:
             v.add(DENY, f"`{what}` overwrites {s} ({hit}) with the copy from {source}; an older or "
@@ -2754,6 +2831,7 @@ def _git_read_tree(root, cwd, rest, v):
     # Without -u only the index changes, but the "restore from the index" undo
     # would then write that tree's copies.
     for t in pos:
+        _tick()  # E8: budget check per iteration
         _move_to(root, cwd, t, v, "git read-tree")
 
 
@@ -2784,6 +2862,7 @@ def _git_update_index(root, cwd, rest, v):
               "rollback")
     paths, i = [], 0
     while i < len(rest):
+        _tick()  # E8: budget check per iteration
         a = rest[i]
         if a == "--cacheinfo" and i + 1 < len(rest):
             if "," in rest[i + 1]:
@@ -2797,6 +2876,7 @@ def _git_update_index(root, cwd, rest, v):
             paths.append(a)
         i += 1
     for p in paths:
+        _tick()  # E8: budget check per iteration
         hit = _pathspec_hit(root, cwd, p)
         if hit:
             v.add(DENY, f"`git update-index` writes {p} ({hit}) straight into git's index, "
@@ -2810,10 +2890,12 @@ def _git_merge_like(root, cwd, sub, rest, v, raw, depth):
         "--message", "--strategy", "--strategy-option", "--file", "--into-name", "--onto",
         "--exec", "--mainline"))
     for key in ("-x", "--exec"):
+        _tick()  # E8: budget check per iteration
         if isinstance(opts.get(key), str) and depth < 4:
             check_command(root, cwd, opts[key], v, depth + 1)
     if sub in ("cherry-pick", "revert"):
         for c in pos:
+            _tick()  # E8: budget check per iteration
             if ".." in c:
                 a, _, b = c.partition("...") if "..." in c else c.partition("..")
                 _move_to(root, cwd, b or "HEAD", v, f"git {sub}", base=a or "HEAD")
@@ -2825,6 +2907,7 @@ def _git_merge_like(root, cwd, sub, rest, v, raw, depth):
     if sub == "rebase":
         return _git_rebase(root, cwd, opts, pos, v)
     for t in pos or ["@{upstream}"]:
+        _tick()  # E8: budget check per iteration
         _move_to(root, cwd, _rev(t), v, f"git {sub}", base="merge-base")
 
 
@@ -2914,6 +2997,7 @@ def _git_bisect(root, cwd, rest, v, depth):
     if not bads or not goods:
         return None  # git needs both ends before it checks anything out
     for b in bads:
+        _tick()  # E8: budget check per iteration
         _move_to(root, cwd, b, v, f"git bisect {op}")
     names = _git_ro(cwd, "log", "--format=", "--name-only", "-m", "--no-renames",
                     "--max-count=20000", *bads, "--not", *goods, "--")
@@ -2938,6 +3022,7 @@ def _git_apply(root, cwd, sub, rest, v, raw):
         return None
     args, skip = [], False  # drop redirections (`<<'EOF'`, `< x.patch`, `> out`) and their targets
     for a in rest:
+        _tick()  # E8: budget check per iteration
         if skip:
             skip = False
         elif a == "<":
@@ -2953,6 +3038,7 @@ def _git_apply(root, cwd, sub, rest, v, raw):
         return  # reports only
     texts = []
     for f in pos + after:
+        _tick()  # E8: budget check per iteration
         try:
             with open(os.path.join(cwd, f), encoding="utf-8", errors="replace") as fh:
                 texts.append(fh.read(5_000_000))
@@ -2965,9 +3051,11 @@ def _git_apply(root, cwd, sub, rest, v, raw):
     if not names and not pos and not after:
         v.add(ASK, f"`git {sub}` reads a patch from input Tess cannot see")
     for n in names:
+        _tick()  # E8: budget check per iteration
         if n == "/dev/null":
             continue
         for cand in {n, n.split("/", 1)[-1]}:
+            _tick()  # E8: budget check per iteration
             hit = _pathspec_hit(root, cwd if not prefix else str(root),
                                 os.path.join(prefix, cand) if prefix else cand)
             if hit:
@@ -3003,6 +3091,7 @@ def _check_git_tree_writes(root: Path, cwd: str | None, sub: str, rest: list, v:
             return v.add(DENY, "`git checkout-index` with --prefix, --all or --stdin can write "
                                "files anywhere, Tess's git hooks and gate included", "rollback")
         for p in rest:
+            _tick()  # E8: budget check per iteration
             hit = not p.startswith("-") and _pathspec_hit(root, cwd, p)
             if hit:
                 return v.add(DENY, f"`git checkout-index` overwrites {p} ({hit}) from the index",
@@ -3017,6 +3106,7 @@ def _check_git_tree_writes(root: Path, cwd: str | None, sub: str, rest: list, v:
             dests = (pos + after)[1:2] + [opts[k] for k in ("--separate-git-dir",)
                                           if isinstance(opts.get(k), str)]
         for dest in dests:
+            _tick()  # E8: budget check per iteration
             if _pathspec_hit(root, cwd, dest):
                 v.add(DENY, f"`git {sub}` writes a checkout into {dest}, a protected Tess path",
                       "rollback")
@@ -3055,6 +3145,7 @@ def _pull_rebases(cwd: str, opts: dict) -> bool:
         return False
     branch = (_git_ro(cwd, "symbolic-ref", "-q", "--short", "HEAD") or "").strip()
     for key in ([f"branch.{branch}.rebase"] if branch else []) + ["pull.rebase"]:
+        _tick()  # E8: budget check per iteration
         val = (_git_ro(cwd, "config", "--get", key) or "").strip().lower()
         if val:
             return val not in ("false", "no", "off", "0")
@@ -3085,6 +3176,7 @@ def _git_pull(root, cwd, rest, v):
         return v.add(ASK, _PULL_NETWORK.format(src=repo or "its upstream"))
     targets = []
     for spec in specs:
+        _tick()  # E8: budget check per iteration
         src = spec.lstrip("+").split(":", 1)[0]
         if not src or src.startswith("-"):
             return v.add(ASK, f"`git pull . {spec}` names nothing Tess can resolve")
@@ -3100,6 +3192,7 @@ def _git_pull(root, cwd, rest, v):
         targets.append(up)
     rebase = _pull_rebases(cwd, opts)
     for t in targets:
+        _tick()  # E8: budget check per iteration
         if not _tree(cwd, t):
             v.add(ASK, f"`git pull` brings in {t}, which Tess cannot resolve; it may replace "
                        "Tess's own gate, launcher or hook settings")
@@ -3139,6 +3232,7 @@ def _check_push(root: Path, cwd: str, rest: list, v: Verdict, cfg=(), cenv=()):
             return  # every refspec names a ref to delete: no data is published
     pos, repo, i = [], None, 0
     while i < len(rest):
+        _tick()  # E8: budget check per iteration
         a = str(rest[i])
         if a == "--":
             pos += [str(x) for x in rest[i + 1:]]
@@ -3189,6 +3283,7 @@ def _url_rules(top: str, pre: list, kind: str) -> list:
     out = _git(top, *pre, "config", "--get-regexp", r"^url\..*\." + kind + "$") or ""
     rules = []
     for line in out.splitlines():
+        _tick()  # E8: budget check per iteration
         key, _, val = line.partition(" ")
         rules.append((val, key[4:-(len(kind) + 1)]))
     return rules
@@ -3249,6 +3344,7 @@ def _push_refs(top: str, pre: list, remote: str | None, specs: list, opts: list)
     # tags that point into the history being pushed, as git does.
     follow = conf("--type=bool", "--get", "push.followTags") == "true"
     for o in opts:
+        _tick()  # E8: budget check per iteration
         name = o.split("=", 1)[0]
         if name.startswith("--no-") and len(name) >= 8 and "follow-tags".startswith(name[5:]):
             follow = False
@@ -3266,6 +3362,7 @@ def _push_refs(top: str, pre: list, remote: str | None, specs: list, opts: list)
             refs += [["HEAD", sha]] if sha else []
     k = 0
     while k < len(specs):
+        _tick()  # E8: budget check per iteration
         spec, k = specs[k], k + 1
         if spec == "tag" and k < len(specs):
             spec, k = "refs/tags/" + specs[k], k + 1
@@ -3274,6 +3371,7 @@ def _push_refs(top: str, pre: list, remote: str | None, specs: list, opts: list)
             continue  # a deletion carries no data
         if "*" in src:
             for pat in ({src} if src.startswith("refs/") else {src, "refs/heads/" + src, "refs/tags/" + src}):
+                _tick()  # E8: budget check per iteration
                 refs += each(pat)
             continue
         sha = _git(top, "rev-parse", "--verify", "--quiet", src)
@@ -3290,6 +3388,7 @@ def _push_refs(top: str, pre: list, remote: str | None, specs: list, opts: list)
         annotated = [ln.split()[:2] for ln in (out or "").splitlines() if ln.endswith(" tag")]
         reach = set()
         for sha in sorted({sha for _r, sha in refs})[:64]:
+            _tick()  # E8: budget check per iteration
             merged = _git(top, "for-each-ref", f"--merged={sha}", "--format=%(refname)", "refs/tags/")
             reach.update((merged or "").split())
         refs += [[r, sha] for r, sha in annotated if r in reach and [r, sha] not in refs]
@@ -3316,11 +3415,13 @@ def _created_in_command(src: str) -> bool:
     except ValueError:
         return False
     for seg in segs:
+        _tick()  # E8: budget check per iteration
         argv = [str(a) for a in _resolve(seg).argv]
         if not argv or os.path.basename(argv[0]).lower() != "git":
             continue
         i = 1
         while i < len(argv) and argv[i].startswith("-"):
+            _tick()  # E8: budget check per iteration
             i += 2 if argv[i] in GIT_VALUE_OPTS else 1
         sub, rest = (argv[i] if i < len(argv) else ""), argv[i + 1:]
         if sub == "worktree" and rest[:1] == ["add"]:
@@ -3333,6 +3434,7 @@ def _created_in_command(src: str) -> bool:
         elif sub in ("branch", "tag"):
             k = 0
             while k < len(rest):
+                _tick()  # E8: budget check per iteration
                 if rest[k] in _REF_VALUE_OPTS:
                     k += 2
                     continue
@@ -3364,6 +3466,7 @@ def _publish_remote_check(root: Path, cwd: str, pos: list, opts: list, v: Verdic
     for url in urls:  # git pushes to every pushurl of a remote
         # -I -B: the engine lives in the working tree, and a planted
         # .tess/bin/argparse.py (or yaml.py) beside it must never run inside this hook.
+        _tick()  # E8: budget check per iteration
         r = subprocess.run([sys.executable, "-I", "-B", str(tessctl), "doctor", "--publish-remote",
                             remote, url],
                            input=stdin, capture_output=True, text=True, cwd=top, env=env,
@@ -3514,6 +3617,7 @@ class _Ctx:
         self.cond_now = parent.cond_now if parent is not None else False
         self.call_dirs = None
         for k, val in (env or {}).items():
+            _tick()  # E8: budget check per iteration
             self.vars[k] = None if re.search(r"[$`]", str(val)) else [str(val)]
             self.nonopt.discard(k)
 
@@ -3592,6 +3696,7 @@ def _sub_values(text: str, cwd: str | None):
         return None
     where, k = None, 1
     while k < len(words):
+        _tick()  # E8: budget check per iteration
         w = words[k]
         if w in ("-p", "--tmpdir") and k + 1 < len(words):
             where, k = words[k + 1], k + 2
@@ -3614,6 +3719,7 @@ def _unescape(text: str) -> str | None:
     hex, \\c...), whose output Tess does not work out."""
     out, i = [], 0
     while i < len(text):
+        _tick()  # E8: budget check per iteration
         if text[i] == "\\":
             nxt = text[i + 1] if i + 1 < len(text) else ""
             if nxt not in _SIMPLE_ESC:
@@ -3632,6 +3738,7 @@ def _echo_out(args: list) -> list | None:
     bash's does not, so both readings count; None for an escape Tess does
     not decode (v1.0 round 3)."""
     while args and re.fullmatch(r"-[neE]+", args[0]):
+        _tick()  # E8: budget check per iteration
         args = args[1:]
     out = " ".join(args)
     if "\\" not in out:
@@ -3653,6 +3760,7 @@ def _printf_out(args: list) -> str | None:
     rounds = [rest[k:k + n] for k in range(0, len(rest), n)] if n and rest else [[]]
     out = []
     for chunk in rounds:  # the format is reused until the arguments run out
+        _tick()  # E8: budget check per iteration
         it = iter(chunk + [""] * n)
         out.append("".join("%" if t == "%%" else next(it) if t == "%s" else t for t in toks))
     return "".join(out)
@@ -3696,11 +3804,13 @@ def _brace_items(items: list, limit: int) -> list:
     `{`, `,` and `}` are special. Raises _Overflow past `limit` results."""
     start = 0
     while True:
+        _tick()  # E8: budget check per iteration
         i = next((k for k in range(start, len(items)) if items[k][0] == "raw" and items[k][1] == "{"), None)
         if i is None:
             return [items]
         depth, j, commas = 0, i, []
         while j < len(items):
+            _tick()  # E8: budget check per iteration
             kind, t = items[j][0], items[j][1]
             if kind == "raw":
                 if t == "{":
@@ -3717,6 +3827,7 @@ def _brace_items(items: list, limit: int) -> list:
         if commas:
             alts, prev = [], i + 1
             for c in commas + [j]:
+                _tick()  # E8: budget check per iteration
                 alts.append(items[prev:c])
                 prev = c + 1
         else:
@@ -3729,6 +3840,7 @@ def _brace_items(items: list, limit: int) -> list:
             alts = [[("lit", x, False)] for x in seq]
         out = []
         for alt in alts:
+            _tick()  # E8: budget check per iteration
             out += _brace_items(items[:i] + alt + items[j + 1:], limit)
             if len(out) > limit:
                 raise _Overflow()
@@ -3739,6 +3851,7 @@ def _braces(text: str, limit: int = _EXPAND_LIMIT) -> list:
     """Brace expansion of unquoted text: {a,b} and {1..3}. Raises _Overflow."""
     out = []
     for alt in _brace_items([("raw", c, False) for c in text], limit):
+        _tick()  # E8: budget check per iteration
         out.append("".join(t for _k, t, _q in alt))
     return out
 
@@ -3819,6 +3932,7 @@ def _part_alts(kind: str, t: str, quoted: bool, first: bool, cwd, ctx: "_Ctx", a
             return [[(x, _gescape(x), False, False)]]
         chunks = []
         for n, x in enumerate(ctx.argv):
+            _tick()  # E8: budget check per iteration
             chunks += ([None] if n else []) + [_val_chunk(x, quoted, assign)]
         return [chunks]
     return None
@@ -3829,6 +3943,7 @@ def _split_fields(chunks: list, ifs) -> list | None:
     each field: [(text, pattern or None), ...]; None when IFS is unknown."""
     fields, cur = [], None
     for ch in chunks:
+        _tick()  # E8: budget check per iteration
         if ch is None:  # between the arguments of "$@"
             if cur is not None:
                 fields.append(cur)
@@ -3845,6 +3960,7 @@ def _split_fields(chunks: list, ifs) -> list | None:
             continue
         pieces = re.split("[" + re.escape(ifs) + "]+", text) if ifs else [text]
         for k, piece in enumerate(pieces):
+            _tick()  # E8: budget check per iteration
             if k and cur is not None:
                 fields.append(cur)
                 cur = None
@@ -3885,6 +4001,7 @@ def _word_fields(word, cwd: str | None, ctx: "_Ctx | None", limit: int = _EXPAND
         return [[]], None  # "$@" with no arguments is no word at all
     items = []
     for k, t, q in parts:
+        _tick()  # E8: budget check per iteration
         if not assign and (k == "raw" or (k == "fallback" and not re.search(r"[$`]", t))):
             items += [("raw", c, False) for c in t]
         else:
@@ -3895,14 +4012,17 @@ def _word_fields(word, cwd: str | None, ctx: "_Ctx | None", limit: int = _EXPAND
         return None, _overflow_prefix(items)
     ifs, out = _ifs(ctx), [[]]
     for alt in alts:
+        _tick()  # E8: budget check per iteration
         merged = []
         for k, t, q in alt:
+            _tick()  # E8: budget check per iteration
             if merged and k == "raw" and merged[-1][0] == "raw":
                 merged[-1] = ("raw", merged[-1][1] + t, False)
             else:
                 merged.append((k, t, q))
         cands = [[]]
         for n, (k, t, q) in enumerate(merged):
+            _tick()  # E8: budget check per iteration
             opts = _part_alts(k, t, q, n == 0, cwd, ctx, assign)
             if opts is None:
                 return None, _unknown_prefix(alts, cands, ifs)
@@ -3911,6 +4031,7 @@ def _word_fields(word, cwd: str | None, ctx: "_Ctx | None", limit: int = _EXPAND
             cands = [c + o for c in cands for o in opts]
         this = []
         for cand in cands:
+            _tick()  # E8: budget check per iteration
             if assign:
                 this.append([("".join(c[0] for c in cand if c is not None), None)])
                 continue
@@ -3933,6 +4054,7 @@ def _unknown_prefix(alts: list, cands: list, ifs) -> str:
         return os.path.commonprefix([_overflow_prefix(a) for a in alts])
     texts = []
     for cand in cands:
+        _tick()  # E8: budget check per iteration
         if any(c is None or (c[3] and (ifs is None or any(ch in c[0] for ch in ifs))) for c in cand):
             return ""
         texts.append("".join(c[0] for c in cand))
@@ -3944,6 +4066,7 @@ def _overflow_prefix(items: list) -> str:
     (`/tmp/cache-` of `/tmp/cache-{1..5000}`); "" if any `..` follows it."""
     pre = ""
     for k, t, _q in items:
+        _tick()  # E8: budget check per iteration
         if k not in ("lit", "raw") or (k == "raw" and t in "{$`"):
             break
         pre += t
@@ -4036,6 +4159,7 @@ def _rebound(name: str, ctx: "_Ctx") -> bool:
     if name in _SLASHFREE_VARS and not os.environ.get(name, "0").isdigit():
         return True  # a value from the environment counts only when it is a plain number
     for text in dict.fromkeys((ctx.raw or "", _STATE.get("cmd") or "")):
+        _tick()  # E8: budget check per iteration
         flat = _flat_shell(text)
         refs = re.sub(r"\$\{" + name + r"\}|\$" + name + r"(?!\w)", "", flat)
         if re.search(r"(?<!\w)" + name + r"(?!\w)", refs) or re.search(r"\$\{![^}]*=", flat):
@@ -4045,6 +4169,7 @@ def _rebound(name: str, ctx: "_Ctx") -> bool:
         if any(_glob_builtins(m.group(1), _SHELL_STATE_BUILTINS) for m in _GLOB_CMD.finditer(flat)):
             return True  # Quinn R3: `uns?t ${n}DOM; r?ad ${n}DOM < f`
         for m in _BINDERS.finditer(flat):
+            _tick()  # E8: budget check per iteration
             if _binder_may_name(m.group(1), m.group(2)):
                 return True
     return False
@@ -4075,6 +4200,7 @@ def _binder_may_name(word: str, arg: str) -> bool:
         return False  # printf without -v / wait without -p binds no variable
     toks = _REDIR_TOKEN.sub(" ", arg).split()
     for tok in toks:
+        _tick()  # E8: budget check per iteration
         if tok.startswith("-") or tok.startswith("+"):
             if _DYN_TEXT.search(tok):
                 return True  # an option only known at run time
@@ -4096,6 +4222,7 @@ def _slash_free_sub(t: str, ctx: "_Ctx") -> bool:
     if prog in ctx.funcs or prog in ctx.aliases:
         return False
     for text in dict.fromkeys((ctx.raw or "", _STATE.get("cmd") or "")):
+        _tick()  # E8: budget check per iteration
         flat = _flat_shell(text)
         if (re.search(r"(?<![\w./-])" + re.escape(prog) + r"\s*\(\s*\)", flat)
                 or re.search(r"(?<!\w)function\s+" + re.escape(prog) + r"(?![\w.-])", flat)
@@ -4113,6 +4240,7 @@ def _slash_free_runtime(word, cwd: str | None, ctx: "_Ctx | None") -> bool:
     seen, afters, tails = False, None, [""]
     esc = lambda x: re.sub(r"([*?\[])", r"[\1]", x)  # noqa: E731
     for k, t in word.parts:
+        _tick()  # E8: budget check per iteration
         known = None
         if k in ("lit", "raw"):
             known = t
@@ -4254,6 +4382,7 @@ def _value_alts(vals: list, word, i: int) -> list:
     quoted = bool(word.q[i]) if i < len(getattr(word, "q", ())) else False
     out = []
     for v in vals:
+        _tick()  # E8: budget check per iteration
         out.append(_g.escape(v) or _EMPTY)
         if not quoted and _g.has_magic(v):
             out.append(v)
@@ -4268,6 +4397,7 @@ def _runtime_shapes(word, cwd: str | None, ctx: "_Ctx", cap: int = 16):
     import glob as _g
     outs = [()]
     for i, (k, t) in enumerate(word.parts):
+        _tick()  # E8: budget check per iteration
         if k == "lit":
             alts = [_g.escape(t)]
         elif k == "raw":
@@ -4280,6 +4410,7 @@ def _runtime_shapes(word, cwd: str | None, ctx: "_Ctx", cap: int = 16):
                 # A brace group (`cache-{1..5000}`) matches like `*` when it holds no "/".
                 prev = None
                 while prev != a:
+                    _tick()  # E8: budget check per iteration
                     prev, a = a, re.sub(r"\{[^{}/]*\}", "*", a)
                 if re.search(r"[{}]", a):
                     return None
@@ -4314,11 +4445,13 @@ def _shape_segments(shape) -> list:
     no text of its own (`/o7/$(date +)/sub` is `/o7/sub`)."""
     segs, cur, flag = [], "", False
     for p in shape:
+        _tick()  # E8: budget check per iteration
         if p is _EMPTY:
             flag = True
             continue
         bits = p.split("/")
         for b in bits[:-1]:
+            _tick()  # E8: budget check per iteration
             segs.append((cur + b, flag))
             cur, flag = "", False
         cur += bits[-1]
@@ -4359,6 +4492,7 @@ def _link_may_redirect(root: Path, cwd: str | None, word, ctx: "_Ctx | None") ->
         at all when it has no text of its own."""
         paths, dynamic = [(start, via)], False
         for seg, empty in segs:
+            _tick()  # E8: budget check per iteration
             if empty:
                 dynamic = True
                 if not seg:
@@ -4367,6 +4501,7 @@ def _link_may_redirect(root: Path, cwd: str | None, word, ctx: "_Ctx | None") ->
             dynamic = dynamic or magic
             nxt = []
             for p, v in paths:
+                _tick()  # E8: budget check per iteration
                 if not magic:
                     cands = [os.path.join(p, seg)]
                     v_step = seg == ".."
@@ -4379,6 +4514,7 @@ def _link_may_redirect(root: Path, cwd: str | None, word, ctx: "_Ctx | None") ->
                     try:
                         with os.scandir(p) as it:
                             for e in it:
+                                _tick()  # E8: budget check per iteration
                                 budget[0] -= 1
                                 if budget[0] < 0:
                                     return True
@@ -4403,11 +4539,13 @@ def _link_may_redirect(root: Path, cwd: str | None, word, ctx: "_Ctx | None") ->
                         try:
                             for dp, dn, fn in os.walk(p, followlinks=False,
                                                       onerror=lambda e: (_ for _ in ()).throw(e)):
+                                _tick()  # E8: budget check per iteration
                                 budget[0] -= len(dn) + len(fn)
                                 if budget[0] < 0:
                                     return True
                                 dn[:] = [d for d in dn if not d.startswith(".")]
                                 for d in list(dn):
+                                    _tick()  # E8: budget check per iteration
                                     q = os.path.join(dp, d)
                                     if os.path.islink(q):
                                         if "***" in seg:
@@ -4417,6 +4555,7 @@ def _link_may_redirect(root: Path, cwd: str | None, word, ctx: "_Ctx | None") ->
                         except OSError:
                             return True
                 for q in cands:
+                    _tick()  # E8: budget check per iteration
                     v2 = v or (dynamic and (v_step or q.endswith(os.sep + "..") or os.path.islink(q)))
                     if v2 and lands(q):
                         return True
@@ -4431,6 +4570,7 @@ def _link_may_redirect(root: Path, cwd: str | None, word, ctx: "_Ctx | None") ->
 
     for shape in shapes:
         # An empty part in front makes `$!/x` the absolute path `/x`.
+        _tick()  # E8: budget check per iteration
         text = _shape_text(shape)
         if not text.startswith("/"):
             shape = (_g.escape(cwd or base).rstrip("/") + "/",) + shape
@@ -4440,6 +4580,7 @@ def _link_may_redirect(root: Path, cwd: str | None, word, ctx: "_Ctx | None") ->
         nsegs = [p for p in os.path.normpath(text).split("/") if p]
         # Links this command makes earlier (`ln -s "$PWD" /var/tmp/b-0 && ...`).
         for link, target in ctx.links.items():
+            _tick()  # E8: budget check per iteration
             lsegs = [p for p in link.split("/") if p]
             if len(lsegs) <= len(nsegs) and all(fits(a, b) for a, b in zip(lsegs, nsegs)):
                 dest = None if target is None else _through_links(target, os.sep, ctx)
@@ -4516,6 +4657,7 @@ def _pattern_hit(root: Path, cwd: str, pat: str) -> str | None:
         return None
     pparts = ([] if rel == "." else rel.split("/")) + [p for p in parts[k:] if p]
     for g in _protected_globs(root):
+        _tick()  # E8: budget check per iteration
         entry = g[:-3] if g.endswith("/**") else g
         if _GLOB_CHARS.search(entry):
             continue
@@ -4557,10 +4699,12 @@ def _check_target(root: Path, cwd: str, word, v: "Verdict", ctx: "_Ctx") -> None
                        "cannot check it against its protected files")
         return
     for text, pat in cands:
+        _tick()  # E8: budget check per iteration
         paths = _glob_or_text(cwd, text, pat, v, f"it writes to {word}, which")
         if pat:
             paths += _dotdot_spellings(cwd, pat, v=v)  # Quinn R4: `.*` may be `..`
         for p in paths:
+            _tick()  # E8: budget check per iteration
             full = _through_links(p, cwd, ctx)
             if full is None:
                 v.add(ASK, f"it writes to {word} through a link this command makes to a place "
@@ -4590,8 +4734,10 @@ def _dotdot_spellings(cwd: str, pat: str, cap: int = 3, v: "Verdict | None" = No
     idx = [i for i, s in enumerate(segs) if _GLOB_CHARS.search(s) and _glob_may_be_dotdot(s)][:cap]
     out = []
     for mask in range(1, 1 << len(idx)):
+        _tick()  # E8: budget check per iteration
         alt = list(segs)
         for b, i in enumerate(idx):
+            _tick()  # E8: budget check per iteration
             if mask >> b & 1:
                 alt[i] = ".."
         p = "/".join(alt)
@@ -4625,6 +4771,7 @@ def _control_suffix(path: str) -> str | None:
         tree = entry.endswith("/**")
         eparts = (entry[:-3] if tree else entry).split("/")
         for i in range(len(comps) - len(eparts) + 1):
+            _tick()  # E8: budget check per iteration
             if all(e == c or _seg_match(e, c) for e, c in zip(eparts, comps[i:i + len(eparts)])):
                 if tree or i + len(eparts) == len(comps):
                     return entry
@@ -4641,6 +4788,7 @@ def _word_suffix_hit(word, cands, cwd: str | None, ctx: "_Ctx | None") -> str | 
             and word.parts:
         texts += [_shape_text(sh) for sh in _runtime_shapes(word, cwd, ctx, cap=64) or []]
     for t in texts:
+        _tick()  # E8: budget check per iteration
         hit = _control_suffix(t)
         if hit:
             return hit
@@ -4676,6 +4824,7 @@ def _sub_word(word, k: int):
         return str(word)[k:]
     out, left = [], k
     for n, (kind, t) in enumerate(word.parts):
+        _tick()  # E8: budget check per iteration
         if left and kind in ("lit", "raw", "fallback"):
             take = min(left, len(t))
             t, left = t[take:], left - take
@@ -4695,6 +4844,7 @@ def _part_quoted(word, n: int) -> bool:
 def _redirect_targets(argv: list) -> list:
     out = []
     for i, tok in enumerate(argv):
+        _tick()  # E8: budget check per iteration
         s = str(tok)
         red = (tok.op and s in _REDIR_OPS) if isinstance(tok, _Word) else (
             s in REDIRECTS or s == ">&" or re.match(r"^\d*>{1,2}\|?$", s))
@@ -4709,6 +4859,7 @@ def _redirect_targets(argv: list) -> list:
 def _output_targets(name: str, args: list) -> list:
     out = []
     for i, a in enumerate(args):
+        _tick()  # E8: budget check per iteration
         s = str(a)
         for o in _OUTPUT_OPTS.get(name, ()):
             if s == o and i + 1 < len(args):
@@ -4720,6 +4871,7 @@ def _output_targets(name: str, args: list) -> list:
     if name == "curl" and any(str(a) in ("--remote-name", "--remote-name-all") or
                               re.fullmatch(r"-[A-Za-z]*O[A-Za-z]*", str(a)) for a in args):
         for a in args:
+            _tick()  # E8: budget check per iteration
             m = re.match(r"^[A-Za-z][A-Za-z0-9+.-]*://[^/]+/(?:[^?#]*/)?([^/?#]+)", str(a))
             if m:
                 out.append(_plain(m.group(1)))
@@ -4731,6 +4883,7 @@ def _output_targets(name: str, args: list) -> list:
         if any(set("cruA") & set(c[1:]) for c in clusters) or any(
                 w in ("--create", "--append", "--update") for w in words):
             for i, w in enumerate(words):
+                _tick()  # E8: budget check per iteration
                 if w.startswith("--file="):
                     out.append(_sub_word(args[i], 7))
                 elif w == "--file" and i + 1 < len(args):
@@ -4768,6 +4921,7 @@ def _write_targets(argv: list, orig: list | None = None) -> list:
             ops = [dest] if dest is not None else ops
         out += ops
         for a in args:
+            _tick()  # E8: budget check per iteration
             s = str(a)
             if s.startswith("--") and "=" in s:
                 out.append(_sub_word(a, s.index("=") + 1))  # --target-directory=DIR
@@ -4792,6 +4946,7 @@ _SED_NOARG = set("=dDgGhHlnNpPxzFqQ{}!") | {"L"}
 def _sed_skip_re(s: str, i: int, delim: str) -> int:
     """Index just past the closing `delim` of a regex/replacement starting at i."""
     while i < len(s):
+        _tick()  # E8: budget check per iteration
         c = s[i]
         if c == "\\":
             i += 2
@@ -4814,6 +4969,7 @@ def _sed_parse(script: str) -> tuple:
         return (s[j:] if k < 0 else s[j:k]), (len(s) if k < 0 else k)
 
     while i < len(s):
+        _tick()  # E8: budget check per iteration
         c = s[i]
         if c in " \t\n;":
             i += 1
@@ -4823,10 +4979,12 @@ def _sed_parse(script: str) -> tuple:
             if i < len(s) and s[i] == "/":
                 i = _sed_skip_re(s, i + 1, "/")
                 while i < len(s) and s[i] in "IM":
+                    _tick()  # E8: budget check per iteration
                     i += 1
             elif i + 1 < len(s) and s[i] == "\\":
                 i = _sed_skip_re(s, i + 2, s[i + 1])
                 while i < len(s) and s[i] in "IM":
+                    _tick()  # E8: budget check per iteration
                     i += 1
             else:
                 m = re.match(r"[0-9]+(~[0-9]+)?|\$|[+~][0-9]+", s[i:])
@@ -4837,6 +4995,7 @@ def _sed_parse(script: str) -> tuple:
                 continue
             break
         while i < len(s) and s[i] in " \t!":
+            _tick()  # E8: budget check per iteration
             i += 1
         if i >= len(s):
             break
@@ -4849,6 +5008,7 @@ def _sed_parse(script: str) -> tuple:
         elif c in "rRaic:bBtTv":
             _t, i = to_eol(i)
             while c in "aic" and _t.endswith("\\") and i < len(s):  # a\ text continues
+                _tick()  # E8: budget check per iteration
                 _t, i = to_eol(i + 1)
             if c in "bBtTv:":  # a label ends at `;` in GNU sed: rescan from there
                 k = s.find(";", i - len(_t), i)
@@ -4863,6 +5023,7 @@ def _sed_parse(script: str) -> tuple:
             i = _sed_skip_re(s, _sed_skip_re(s, i + 1, d), d)
             if c == "s":
                 while i < len(s) and s[i] in "gpiImMe0123456789w":
+                    _tick()  # E8: budget check per iteration
                     if s[i] == "e":
                         runs = True
                     if s[i] == "w":
@@ -4903,6 +5064,7 @@ def _sed_program(args: list, cwd: str | None, ctx: "_Ctx | None" = None) -> tupl
         return unknown if unk(items[k]) else str(items[k])
 
     while i < len(items):
+        _tick()  # E8: budget check per iteration
         a = str(items[i])
         if unk(items[i]):
             if all(_unknown_shape(items[i], ctx)):
@@ -4930,6 +5092,7 @@ def _sed_program(args: list, cwd: str | None, ctx: "_Ctx | None" = None) -> tupl
             if a in ("-i", "-I"):
                 bsd_i = True
             for k, ch in enumerate(a[1:], 1):
+                _tick()  # E8: budget check per iteration
                 if ch in "efl":
                     val = a[k + 1:]
                     if not val and (ch != "l" or (i + 1 < len(items) and str(items[i + 1]).isdigit())):
@@ -4948,6 +5111,7 @@ def _sed_program(args: list, cwd: str | None, ctx: "_Ctx | None" = None) -> tupl
         scripts = ops[:2] if bsd_i else ops[:1]  # BSD `sed -i '' 'script' file`
     writes, runs = [], False
     for sc in scripts:
+        _tick()  # E8: budget check per iteration
         if sc is unknown or (isinstance(sc, tuple) and sc[1] is unknown):
             problems.append("its sed program is only known when the command runs, so Tess cannot "
                             "tell which files it writes or what it runs")
@@ -4980,6 +5144,7 @@ def _sed_program(args: list, cwd: str | None, ctx: "_Ctx | None" = None) -> tupl
 def _check_sed(root: Path, cwd: str, argv: list, v: "Verdict", ctx: "_Ctx") -> None:
     """Problems _sed_program reports (its write targets are in _write_targets)."""
     for why in _sed_program(argv[1:], cwd, ctx)[1]:
+        _tick()  # E8: budget check per iteration
         v.add(ASK, why)
 
 
@@ -4996,6 +5161,7 @@ def _check_awk(root: Path, cwd: str, argv: list, v: "Verdict", ctx: "_Ctx") -> N
     asks (the fail-safe); a value after -v or a file it only reads does not."""
     words, progs, i, have_prog, inplace = _operands(argv[1:]), [], 0, False, False
     while i < len(words):
+        _tick()  # E8: budget check per iteration
         w, s = words[i], str(words[i])
         if _unknown_word(w, ctx):
             v.add(ASK, f"it gives {argv[0]} an option or program that is only known when the command "
@@ -5037,9 +5203,11 @@ def _check_awk(root: Path, cwd: str, argv: list, v: "Verdict", ctx: "_Ctx") -> N
         progs.append(str(words[i]))
         i += 1
     for text in progs:
+        _tick()  # E8: budget check per iteration
         if not _AWK_WRITE.search(text):
             continue
         for tok in dict.fromkeys(re.findall(r"[A-Za-z0-9_./~+-]+", text)):
+            _tick()  # E8: budget check per iteration
             t = tok[2:] if tok.startswith("./") else tok
             hit = (t.rstrip("/") in PROTECTED_DIR_ROOTS and t.rstrip("/")) or (
                 ("/" in t or "." in t) and protected_hit(root, cwd, t))
@@ -5061,6 +5229,7 @@ def _operands(words: list) -> list:
     """Words that are not redirections (nor their targets)."""
     out, skip = [], False
     for w in words:
+        _tick()  # E8: budget check per iteration
         if skip:
             skip = False
         elif _is_op(w) and str(w) in _REDIR_OPS:
@@ -5075,6 +5244,7 @@ def _stdin_source(orig: list):
     last input redirection of a segment."""
     src = None
     for i, tok in enumerate(orig):
+        _tick()  # E8: budget check per iteration
         if _is_op(tok) and i + 1 < len(orig):
             s = str(tok)
             if s == "<<<":
@@ -5122,6 +5292,7 @@ def _body_subs(body: str) -> list:
     """Command substitutions a here-document with an unquoted delimiter runs."""
     out, i = [], 0
     while i < len(body):
+        _tick()  # E8: budget check per iteration
         c = body[i]
         if c == "\\":
             i += 2
@@ -5147,15 +5318,18 @@ def _check_subs(root: Path, cwd: str, word, v: "Verdict", depth: int, ctx: "_Ctx
     if not isinstance(word, _Word):
         return
     for kind, t in word.parts:
+        _tick()  # E8: budget check per iteration
         if kind in ("sub", "proc") and t.strip():
             _recurse(root, cwd, t, v, depth, ctx)
         # v1.0 round 2 (GPT-6 #6): a substitution inside ${X:-...}, ${X:=...},
         # ${X:+...}, ${X:?...}, ${A[...]} or $[...] runs too.
         if kind in ("arith", "dyn"):
             for inner in _body_subs(t):
+                _tick()  # E8: budget check per iteration
                 _recurse(root, cwd, inner, v, depth, ctx)
     if word.body and all(k == "raw" for k, _ in word.parts):
         for t in _body_subs(word.body):
+            _tick()  # E8: budget check per iteration
             _recurse(root, cwd, t, v, depth, ctx)
 
 
@@ -5167,6 +5341,7 @@ def _check_shell(root: Path, cwd: str, argv: list, orig: list, v: "Verdict", dep
     segment was a shell running a program Tess checked or refused."""
     words, i, has_c, has_s = [str(a) for a in argv[1:]], 0, False, False
     while i < len(words):
+        _tick()  # E8: budget check per iteration
         a = words[i]
         if a == "--":
             i += 1
@@ -5204,6 +5379,7 @@ def _check_shell(root: Path, cwd: str, argv: list, orig: list, v: "Verdict", dep
                        f"({os.path.basename(str(prog[0])) if prog else 'a pipe'}) prints, which "
                        "Tess cannot read before they run")
         for t in texts or []:
+            _tick()  # E8: budget check per iteration
             _recurse(root, cwd, t, v, depth, ctx)
         if texts:
             _recurse(root, cwd, " ".join(texts), v, depth, ctx)
@@ -5225,6 +5401,7 @@ def _program_from(root: Path, cwd: str, word, v: "Verdict", depth: int, ctx: "_C
         v.add(ASK, "it runs shell commands that another program prints, which Tess cannot read "
                    "before they run")
     for t in texts or []:
+        _tick()  # E8: budget check per iteration
         _recurse(root, cwd, t, v, depth, ctx)
     return True
 
@@ -5244,6 +5421,7 @@ def _check_stdin_operands(root: Path, cwd: str, name: str, orig: list, v: "Verdi
                    "check against its protected files")
         return
     for w in words:
+        _tick()  # E8: budget check per iteration
         _check_target(root, cwd, _plain(w), v, ctx)
 
 
@@ -5258,6 +5436,7 @@ def _patch_paths(text: str, v: "Verdict") -> list:
     in_patch = "*** Begin Patch" in trimmed
     paths, bad = [], None
     for s in trimmed:
+        _tick()  # E8: budget check per iteration
         if not s.startswith("***"):
             continue
         head = next((h for h in _PATCH_HEADERS if s.startswith(h)), None)
@@ -5275,6 +5454,7 @@ def _patch_paths(text: str, v: "Verdict") -> list:
 
 def _check_patch_paths(root: Path, cwd: str, paths: list, v: "Verdict") -> None:
     for p in paths:
+        _tick()  # E8: budget check per iteration
         hit = protected_hit(root, cwd, p)
         if hit:
             v.add(DENY, f"it edits {p}, a protected Tess path ({hit})", "protected")
@@ -5331,13 +5511,16 @@ def _check_patch_input(root: Path, cwd: str, argv: list, orig: list, v: "Verdict
     elif src:
         texts.append(str(src[1]))
     for f in files:
+        _tick()  # E8: budget check per iteration
         try:
             with open(os.path.join(cwd, os.path.expanduser(f)), encoding="utf-8", errors="replace") as fh:
                 texts.append(fh.read(5_000_000))
         except OSError:
             v.add(ASK, f"`patch` applies {f}, which Tess cannot read")
     for n in {n for t in texts for m in _PATCH_PATHS.finditer(t) for n in m.groups() if n}:
+        _tick()  # E8: budget check per iteration
         for cand in {n, n.split("/", 1)[-1]}:
+            _tick()  # E8: budget check per iteration
             hit = cand != "/dev/null" and protected_hit(root, cwd, cand)
             if hit:
                 v.add(DENY, f"`patch` changes {cand} ({hit}), a protected Tess path", "protected")
@@ -5348,6 +5531,7 @@ def _record_links(cwd: str, argv: list, ctx: "_Ctx") -> None:
     """Remember the links `ln` makes, so a later write through one in the same
     command (`ln -s . x && cp y x/CLAUDE.md`) is checked where it lands."""
     for link, target in _ln_links(cwd, argv, ctx)[1]:
+        _tick()  # E8: budget check per iteration
         ctx.links[link] = target
     # v1.0.x (Quinn GAP-1): a link whose own path is only known at run time
     # (`ln -s "$PWD" "/var/tmp/b-$$"`) is not in the list above; mark it, so a
@@ -5365,6 +5549,7 @@ def _mark_runtime_link(cwd: str, words: list, ctx: "_Ctx") -> None:
     (v1.0.x, Quinn R5: the literal spelling `b-0` of `b-$?` must ask too)."""
     n = len(ctx.rt_links)
     for w in words:
+        _tick()  # E8: budget check per iteration
         if not isinstance(w, _Word):
             ctx.rt_links.append(os.path.normpath(os.path.join(cwd, str(w))))
             continue
@@ -5372,6 +5557,7 @@ def _mark_runtime_link(cwd: str, words: list, ctx: "_Ctx") -> None:
         texts = [t for t, _p in cands] if cands is not None else [prefix.rsplit("/", 1)[0] + "/"
                                                                   if "/" in prefix else ""]
         for t in texts:
+            _tick()  # E8: budget check per iteration
             head = os.path.normpath(os.path.join(cwd, os.path.expanduser(t))) if t else os.sep
             ctx.rt_links.append(head)
     if len(ctx.rt_links) == n:
@@ -5382,6 +5568,7 @@ def _runtime_link_over(full: str, ctx: "_Ctx") -> bool:
     """A link whose path is only known at run time may sit on `full`'s way."""
     real = os.path.realpath(full)
     for head in ctx.rt_links:
+        _tick()  # E8: budget check per iteration
         if (os.path.normpath(full) + os.sep).startswith(head.rstrip(os.sep) + os.sep) or \
                 _within(real, os.path.realpath(head)) is not None or \
                 _link_fits(os.path.normpath(full), os.path.normpath(head)):  # round 4 (G2)
@@ -5413,11 +5600,13 @@ def _record_planted_links(cwd: str, name: str, argv: list, ctx: "_Ctx") -> None:
         recursive, target, ops = _copy_plan(name, argv[1:])
     elif name in EXTRACTORS:
         for plan in _extract_plans([str(a) for a in argv], cwd):
+            _tick()  # E8: budget check per iteration
             dest, archive, odd = plan
             links = None if odd or archive is None else _archive_links(archive)
             if links is None:
                 ctx.links[os.path.normpath(dest)] = None
             for member, linkname in links or []:
+                _tick()  # E8: budget check per iteration
                 _plant(os.path.normpath(os.path.join(dest, member)), linkname, ctx)
         return
     else:
@@ -5430,18 +5619,22 @@ def _record_planted_links(cwd: str, name: str, argv: list, ctx: "_Ctx") -> None:
         return
     dests = [os.path.normpath(os.path.join(cwd, os.path.expanduser(t))) for t, _p in tvals]
     for op in ops:
+        _tick()  # E8: budget check per iteration
         cands, _ = _word_values(op, cwd, ctx)
         srcs = None if cands is None else [p for t, pat in cands for p in _glob_or_text(cwd, t, pat)]
         if cands is not None and any(pat and _glob(cwd, pat).truncated for _t, pat in cands):
             srcs = None  # round 4: a source listing cut short may hide a link
         found = None if srcs is None else _links_in_sources(srcs, cwd, ctx)
         for d in dests:
+            _tick()  # E8: budget check per iteration
             if found is None:
                 ctx.links[d] = None  # anything below it may be a link
                 continue
             for src, rel, linkname in found:
+                _tick()  # E8: budget check per iteration
                 base = os.path.basename(os.path.normpath(src))
                 for place in (os.path.join(d, rel), os.path.join(d, base, rel)):
+                    _tick()  # E8: budget check per iteration
                     _plant(os.path.normpath(place), linkname, ctx)
 
 
@@ -5459,6 +5652,7 @@ def _links_in_sources(srcs: list, cwd: str, ctx: "_Ctx") -> "list | None":
     tell (too many entries, an unreadable folder, a link this command makes)."""
     out, budget = [], [_LINK_SCAN_LIMIT]
     for s in srcs:
+        _tick()  # E8: budget check per iteration
         full = os.path.normpath(os.path.join(cwd, os.path.expanduser(str(s))))
         if _through_links(full, cwd, ctx) != full or any(
                 k == full or k.startswith(full.rstrip(os.sep) + os.sep) or _link_fits(k, full)
@@ -5474,10 +5668,12 @@ def _links_in_sources(srcs: list, cwd: str, ctx: "_Ctx") -> "list | None":
             continue
         stack = [full]
         while stack:
+            _tick()  # E8: budget check per iteration
             d = stack.pop()
             try:
                 with os.scandir(d) as it:
                     for e in it:
+                        _tick()  # E8: budget check per iteration
                         budget[0] -= 1
                         if budget[0] < 0:
                             return None
@@ -5546,6 +5742,7 @@ def _ln_links(cwd: str, argv: list, ctx: "_Ctx", unknown: "list | None" = None) 
     args, tdir, ops, i = _operands(argv[1:]), None, [], 0
     sym = any(re.match(r"^-[A-Za-z]*s", str(a)) or str(a) == "--symbolic" for a in args)
     while i < len(args):
+        _tick()  # E8: budget check per iteration
         s = str(args[i])
         if s in ("-t", "-S", "--suffix") and i + 1 < len(args):
             tdir = args[i + 1] if s == "-t" else tdir
@@ -5586,6 +5783,7 @@ def _ln_links(cwd: str, argv: list, ctx: "_Ctx", unknown: "list | None" = None) 
                                              else len(ops) - 1):
         unknown.extend(ops)  # `ln -s a b c` into a folder only known at run time
     for t, link in pairs:
+        _tick()  # E8: budget check per iteration
         if not link:
             if unknown is not None:
                 unknown.append(t)
@@ -5658,6 +5856,7 @@ def _find_tree(expr: list, ctx: "_Ctx | None" = None):
         if w in ("-exec", "-execdir", "-ok", "-okdir"):
             k = pos[0]
             while k < len(words) and words[k] not in (";", "+"):
+                _tick()  # E8: budget check per iteration
                 k += 1
             if k >= len(words):
                 raise ValueError("unterminated -exec")
@@ -5702,6 +5901,7 @@ def _find_tree(expr: list, ctx: "_Ctx | None" = None):
     def conj():
         node = primary()
         while peek() is not None and peek() not in ("-o", "-or", ",", ")"):
+            _tick()  # E8: budget check per iteration
             if peek() in ("-a", "-and"):
                 pos[0] += 1
             node = ("and", node, primary())
@@ -5710,6 +5910,7 @@ def _find_tree(expr: list, ctx: "_Ctx | None" = None):
     def disj():
         node = conj()
         while peek() in ("-o", "-or"):
+            _tick()  # E8: budget check per iteration
             pos[0] += 1
             node = ("or", node, conj())
         return node
@@ -5717,6 +5918,7 @@ def _find_tree(expr: list, ctx: "_Ctx | None" = None):
     def comma():
         node = disj()
         while peek() == ",":
+            _tick()  # E8: budget check per iteration
             pos[0] += 1
             node = ("comma", node, disj())
         return node
@@ -5796,6 +5998,7 @@ def _find_plan(argv: list) -> tuple:
     """(start paths, expression, follows links) of a find command."""
     args, i, starts, follow = argv[1:], 0, [], False
     while i < len(args):
+        _tick()  # E8: budget check per iteration
         a = str(args[i])
         if a in ("-H", "-L", "-P", "-E", "-X", "-d", "-s", "-x") or re.fullmatch(r"-O\d*", a):
             follow = (a == "-L") or (follow and a not in ("-P", "-H"))
@@ -5808,6 +6011,7 @@ def _find_plan(argv: list) -> tuple:
         else:
             break
     while i < len(args) and not str(args[i]).startswith("-") and str(args[i]) not in ("(", "!", ","):
+        _tick()  # E8: budget check per iteration
         starts.append(args[i])
         i += 1
     return starts or [_plain(".")], args[i:], follow
@@ -5825,6 +6029,7 @@ def _check_find(root: Path, cwd: str, argv: list, v: "Verdict", raw: str, depth:
     # or a starting folder that could be one, and, when find changes files,
     # also when it is a test's value (`-name "$P" -delete`).
     for s in starts:
+        _tick()  # E8: budget check per iteration
         if _unknown_word(s, ctx) and not all(_unknown_shape(s, ctx)):
             v.add(ASK, f"it gives find a starting folder that is only known when the command runs "
                        f"({s}); it could be a test or an action such as -delete, so Tess cannot "
@@ -5832,6 +6037,7 @@ def _check_find(root: Path, cwd: str, argv: list, v: "Verdict", raw: str, depth:
             return
     value_unknown, j = None, 0
     while j < len(expr):
+        _tick()  # E8: budget check per iteration
         a = str(expr[j])
         if _unknown_word(expr[j], ctx):
             v.add(ASK, f"it gives find a test or action that is only known when the command runs "
@@ -5840,6 +6046,7 @@ def _check_find(root: Path, cwd: str, argv: list, v: "Verdict", raw: str, depth:
             return
         if a in ("-exec", "-execdir", "-ok", "-okdir"):
             while j < len(expr) and str(expr[j]) not in (";", "+"):
+                _tick()  # E8: budget check per iteration
                 j += 1
         elif a in _FIND_ONEARG and j + 1 < len(expr):
             if _unknown_word(expr[j + 1], ctx) and a not in ("-fprint", "-fprint0", "-fls"):
@@ -5850,10 +6057,12 @@ def _check_find(root: Path, cwd: str, argv: list, v: "Verdict", raw: str, depth:
         j += 1
     changes, j = False, 0
     while j < len(expr):
+        _tick()  # E8: budget check per iteration
         a = str(expr[j])
         if a in ("-exec", "-execdir", "-ok", "-okdir"):
             k = j + 1
             while k < len(expr) and str(expr[k]) not in (";", "+"):
+                _tick()  # E8: budget check per iteration
                 k += 1
             inner = list(expr[j + 1:k])  # {} stays: a plain name, the matches are walked below
             if inner:
@@ -5889,6 +6098,7 @@ def _check_find(root: Path, cwd: str, argv: list, v: "Verdict", raw: str, depth:
 def _find_depths(words: list) -> tuple:
     maxdepth, mindepth = None, 0
     for k, w in enumerate(words[:-1]):
+        _tick()  # E8: budget check per iteration
         if w in ("-maxdepth", "-mindepth") and words[k + 1].isdigit():
             if w == "-maxdepth":
                 maxdepth = int(words[k + 1])
@@ -5904,6 +6114,7 @@ def _find_control_entries(root: Path, start: str, top: str, maxdepth) -> list | 
     real = os.path.realpath(top)
     out = []
     for f, fr, _label in _control_files(root):
+        _tick()  # E8: budget check per iteration
         if _within(real, fr) is not None:
             return None
         rel = _within(fr, real)
@@ -5911,6 +6122,7 @@ def _find_control_entries(root: Path, start: str, top: str, maxdepth) -> list | 
             continue
         parts = rel.split("/")
         for n in range(1, len(parts) + 1):
+            _tick()  # E8: budget check per iteration
             if maxdepth is not None and n > maxdepth:
                 break
             out.append((os.path.join(real, *parts[:n]), os.path.join(start, *parts[:n]), n))
@@ -5938,6 +6150,7 @@ def _find_may_change_control(root: Path, folder: str, tree, maxdepth, mindepth) 
         else:
             rels.append(rest)
     for rel in dict.fromkeys(rels):
+        _tick()  # E8: budget check per iteration
         d = 0 if not rel else rel.count("/") + 1
         if d < mindepth or (maxdepth is not None and d > maxdepth):
             continue
@@ -6018,6 +6231,7 @@ def _find_protected(root: Path, cwd: str, starts: list, expr: list, v: "Verdict"
                                 return
                             _tick()
                     for path, shown, d in entries:
+                        _tick()  # E8: budget check per iteration
                         if d < mindepth or (maxdepth is not None and d > maxdepth) or not changed(path, shown, d):
                             continue
                         hit = protected_hit(root, cwd, path)
@@ -6034,6 +6248,7 @@ def _interp_code(argv: list, raw: str) -> str:
     """The program an interpreter segment runs from the command text: the
     -c/-e argument, else (stdin / heredoc) the whole command text."""
     for j, a in enumerate(argv[1:], 1):
+        _tick()  # E8: budget check per iteration
         if a in ("-c", "-e", "-E", "--eval", "-p", "--print", "-r") and j + 1 < len(argv):
             return argv[j + 1]
         if re.match(r"^-[A-Za-z]*[ceE]$", a) and j + 1 < len(argv):
@@ -6125,6 +6340,7 @@ def _tar_oldstyle(args: list) -> list:
         return list(args)
     out, rest = [], list(args[1:])
     for ch in str(args[0]):
+        _tick()  # E8: budget check per iteration
         out.append("-" + ch)
         if ch in _TAR_OLD_VALUES and rest:
             out.append(rest.pop(0))
@@ -6144,6 +6360,7 @@ def _extract_dest_words(argv: list, cwd: str) -> list:
         args = _tar_oldstyle(args)
         i = 0
         while i < len(args):
+            _tick()  # E8: budget check per iteration
             a, s = args[i], str(args[i])
             if s == "--":
                 break
@@ -6156,6 +6373,7 @@ def _extract_dest_words(argv: list, cwd: str) -> list:
                     i += 1
             elif s.startswith("-") and len(s) > 1:
                 for k, ch in enumerate(s[1:], 1):
+                    _tick()  # E8: budget check per iteration
                     if ch in "fCTXs":
                         if ch == "C":
                             out.append(_sub_word(a, k + 1) if s[k + 1:] else
@@ -6166,6 +6384,7 @@ def _extract_dest_words(argv: list, cwd: str) -> list:
             i += 1
     elif name == "unzip":
         for i, a in enumerate(args):
+            _tick()  # E8: budget check per iteration
             s = str(a)
             if s.startswith("-d"):
                 out.append(_sub_word(a, 2) if len(s) > 2 else (args[i + 1] if i + 1 < len(args) else None))
@@ -6245,6 +6464,7 @@ def _check_extract(root: Path, cwd: str, argv: list, v: Verdict, ctx: "_Ctx | No
     """v1.0.0 final reviews: an archive extractor writes files the command
     text does not name (`git archive <old> .claude/hooks | tar -x`)."""
     for plan in _extract_plans(argv, cwd):
+        _tick()  # E8: budget check per iteration
         _check_extract_plan(root, cwd, argv, v, ctx, plan)
 
 
@@ -6262,6 +6482,7 @@ def _check_extract_plan(root: Path, cwd: str, argv: list, v: Verdict, ctx, plan)
         v.add(ASK, f"`{tool}` extracts an archive Tess cannot list into a place only known when "
                    "the command runs")
     for m in [""] + (members or [] if unresolved else []):
+        _tick()  # E8: budget check per iteration
         hit = _control_suffix(os.path.join(dest, m) if m else dest)
         if hit:
             v.add(ASK, f"`{tool}` extracts {m or 'files'} into {dest}, which ends in one of Tess's "
@@ -6274,8 +6495,10 @@ def _check_extract_plan(root: Path, cwd: str, argv: list, v: Verdict, ctx, plan)
     # matches on disk, as well as at the text as written.
     spelled = [dest]
     for w in _extract_dest_words(argv, cwd):
+        _tick()  # E8: budget check per iteration
         vals, _ = _word_values(w, cwd, ctx)
         for t, p in vals or []:
+            _tick()  # E8: budget check per iteration
             if _unmatched_dest_glob(cwd, p, ctx):
                 v.add(ASK, _DEST_GLOB_ASK.format(dest=t))
             sp = _dest_spellings(cwd, t, p)
@@ -6285,6 +6508,7 @@ def _check_extract_plan(root: Path, cwd: str, argv: list, v: Verdict, ctx, plan)
             spelled += [x if os.path.isabs(x) else os.path.join(cwd, x) for x in list(sp)[:-1]]
     dests = []
     for d in dict.fromkeys(spelled):
+        _tick()  # E8: budget check per iteration
         dests.append(d)
         if ctx is not None:
             through = _through_links(d, cwd, ctx)
@@ -6294,6 +6518,7 @@ def _check_extract_plan(root: Path, cwd: str, argv: list, v: Verdict, ctx, plan)
             elif through != d:
                 dests.append(through)
     for dest in dests:  # the path as written and where the link leads: never fewer checks
+        _tick()  # E8: budget check per iteration
         rel = _rel_to_root(root, cwd, dest)
         if rel is None:
             continue  # outside the project
@@ -6305,6 +6530,7 @@ def _check_extract_plan(root: Path, cwd: str, argv: list, v: Verdict, ctx, plan)
                 return
             continue
         for m in members:
+            _tick()  # E8: budget check per iteration
             hit = protected_hit(root, dest, m.lstrip("/") if not m.startswith("/") else m)
             if hit:
                 v.add(DENY, f"`{tool}` extracts {m} ({hit}), a protected Tess path", "protected")
@@ -6346,6 +6572,7 @@ def _copy_plan(name: str, args: list) -> tuple:
     shorts, longs = _COPY_INTO[name]
     flags, target, ops, i, rest = "", None, [], 0, False
     while i < len(args):
+        _tick()  # E8: budget check per iteration
         a, s = args[i], str(args[i])
         if rest or not s.startswith("-") or s == "-":
             ops.append(a)
@@ -6360,6 +6587,7 @@ def _copy_plan(name: str, args: list) -> tuple:
                 i += 1
         else:
             for k, ch in enumerate(s[1:], 1):
+                _tick()  # E8: budget check per iteration
                 flags += ch
                 if ch in shorts:
                     val = s[k + 1:]
@@ -6391,10 +6619,12 @@ def _tree_names(path: str, limit: int = _LINK_SCAN_LIMIT) -> "list | None":
     links; None when there are more than `limit` or one cannot be listed."""
     out, stack = [], [path]
     while stack:
+        _tick()  # E8: budget check per iteration
         d = stack.pop()
         try:
             with os.scandir(d) as it:
                 for e in it:
+                    _tick()  # E8: budget check per iteration
                     out.append(os.path.relpath(e.path, path))
                     if len(out) > limit:
                         return None
@@ -6472,11 +6702,14 @@ def _check_copy_written(cwd: str, name: str, argv: list, v: "Verdict", ctx: "_Ct
     # `cp -R tpl/. /tmp/elsewhere` stays an ordinary copy.
     unresolved = tvals is None
     for op in ops:
+        _tick()  # E8: budget check per iteration
         vals, _ = _word_values(op, cwd, ctx)
         srcs = []
         for text, pat in vals or []:
+            _tick()  # E8: budget check per iteration
             srcs += _glob_or_text(cwd, text, pat, v, f"it copies {op}, which")
         for src in srcs:
+            _tick()  # E8: budget check per iteration
             if _remote(src):
                 continue
             full = os.path.join(cwd, os.path.expanduser(src))
@@ -6494,7 +6727,9 @@ def _check_copy_written(cwd: str, name: str, argv: list, v: "Verdict", ctx: "_Ct
 
                 names += ([leaf + "/" + n for n in inner] if whole else []) + (inner if contents else [])
             for t in targets:
+                _tick()  # E8: budget check per iteration
                 for n in names:
+                    _tick()  # E8: budget check per iteration
                     hit = _control_suffix(t.rstrip("/") + "/" + n)
                     if hit:
                         verb = {"mv": "moves", "ln": "links"}.get(name, "copies")
@@ -6519,6 +6754,7 @@ def _check_copy_into(root: Path, cwd: str, name: str, argv: list, v: "Verdict", 
     base = os.path.realpath(str(root))
     dests = []
     for text, pat in cands:
+        _tick()  # E8: budget check per iteration
         if _remote(text):
             continue
         if _unmatched_dest_glob(cwd, pat, ctx):
@@ -6532,6 +6768,7 @@ def _check_copy_into(root: Path, cwd: str, name: str, argv: list, v: "Verdict", 
         for spelled in spellings:
             # v1.0.x (attempt 3): a link made earlier in the same command is
             # followed, as the shell will (`ln -s "$PWD" /w/d && cp -R x/. /w/d/`).
+            _tick()  # E8: budget check per iteration
             written = os.path.join(cwd, os.path.expanduser(spelled))
             full = _through_links(written, cwd, ctx)
             if full is None or _runtime_link_over(written, ctx):
@@ -6539,6 +6776,7 @@ def _check_copy_into(root: Path, cwd: str, name: str, argv: list, v: "Verdict", 
                            "check what it overwrites")
             # the path as written and where the link leads: never fewer checks
             for real in dict.fromkeys([os.path.realpath(written)] + ([os.path.realpath(full)] if full else [])):
+                _tick()  # E8: budget check per iteration
                 if _within(base, real) is not None:  # the project root, or a folder above it
                     dests.append((text, real))
     if not dests:
@@ -6554,11 +6792,14 @@ def _check_copy_into(root: Path, cwd: str, name: str, argv: list, v: "Verdict", 
         v.add(ASK, why("the paths it reads from its input"))
         return
     for op in ops:
+        _tick()  # E8: budget check per iteration
         vals, _ = _word_values(op, cwd, ctx)
         texts = []
         for text, pat in vals or []:
+            _tick()  # E8: budget check per iteration
             texts += _glob_or_text(cwd, text, pat, v, f"it copies {op}, which")
         for text in (texts if vals else [None]):
+            _tick()  # E8: budget check per iteration
             if text is None or _remote(text) or text == "{}" or _GLOB_CHARS.search(os.path.basename(text)):
                 v.add(ASK, why(op))  # which files is only known at run time
                 return
@@ -6572,6 +6813,7 @@ def _check_copy_into(root: Path, cwd: str, name: str, argv: list, v: "Verdict", 
                 v.add(ASK, why(op))
                 return
             for _t, real in dests:
+                _tick()  # E8: budget check per iteration
                 written = os.path.join(real, leaf) if leaf not in (".", "..", "") else real
                 if _within(base, os.path.realpath(written)) is not None:
                     if recursive:
@@ -6617,6 +6859,7 @@ def _word_items(word) -> list:
     """`word` as _brace_items reads it: unquoted text one character per item."""
     items = []
     for n, (k, t) in enumerate(word.parts):
+        _tick()  # E8: budget check per iteration
         if k == "raw":
             items += [("raw", c, False) for c in t]
         else:
@@ -6655,6 +6898,7 @@ def _redirect_slots(argv: list) -> set:
     """Indices of the words that are redirections or their targets."""
     out, skip = set(), False
     for i, w in enumerate(argv):
+        _tick()  # E8: budget check per iteration
         if skip:
             out.add(i)
             skip = False
@@ -6672,6 +6916,7 @@ def _argv_variants(argv: list, cwd: str | None, ctx: "_Ctx") -> list | None:
     stays as written. None when there are more than _VARIANT_LIMIT lists."""
     slots, per = _redirect_slots(argv), []
     for i, w in enumerate(argv[1:], 1):
+        _tick()  # E8: budget check per iteration
         if i in slots or not _expands(w) or (ctx.deferred and _positional_only(w)):
             per.append([[w]])
             continue
@@ -6682,6 +6927,7 @@ def _argv_variants(argv: list, cwd: str | None, ctx: "_Ctx") -> list | None:
         per.append([[_field(t, p) for t, p in cand] for cand in cands] or [[]])
     variants = [[argv[0]]]
     for alts in per:
+        _tick()  # E8: budget check per iteration
         if len(variants) * len(alts) > _VARIANT_LIMIT:
             return None
         variants = [a + b for a in variants for b in alts]
@@ -6729,6 +6975,7 @@ def _check_unknown_args(name: str, argv: list, v: Verdict, ctx: "_Ctx") -> None:
         return
     if name in _ASSIGNERS:
         for i in unk:
+            _tick()  # E8: budget check per iteration
             if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*\+?=", _overflow_prefix(_word_items(argv[i]))):
                 v.add(ASK, f"it sets a variable whose name is only known when the command runs "
                            f"({argv[i]}); that could point git at another config file or switch off "
@@ -6748,6 +6995,7 @@ def _check_unknown_args(name: str, argv: list, v: Verdict, ctx: "_Ctx") -> None:
         # approvals or Tess's hooks in the child (see _check_agent_cli)
         ended = False
         for i in range(1, len(argv)):
+            _tick()  # E8: budget check per iteration
             if i in slots:
                 continue
             if str(argv[i]) == "--" and not _unknown_word(argv[i], ctx):
@@ -6774,6 +7022,7 @@ def _check_unknown_args(name: str, argv: list, v: Verdict, ctx: "_Ctx") -> None:
     # the documented gap, SECURITY.md).
     ended = False
     for i in range(1, len(argv)):
+        _tick()  # E8: budget check per iteration
         if i in slots:
             continue
         if str(argv[i]) == "--" and not _unknown_word(argv[i], ctx):
@@ -6844,6 +7093,7 @@ def _interp_parse(name: str, argv: list, ctx: "_Ctx") -> dict | None:
     if name in SHELLS or name in ("fish", "csh", "tcsh", "busybox"):
         i, has_c, has_s, inter = 1, False, False, False
         while i < n:
+            _tick()  # E8: budget check per iteration
             if unk(i):
                 return out("unknown", i)
             a = words[i]
@@ -6886,6 +7136,7 @@ def _interp_parse(name: str, argv: list, ctx: "_Ctx") -> dict | None:
     if _PY.match(name):
         i, inter = 1, False
         while i < n:
+            _tick()  # E8: budget check per iteration
             if unk(i):
                 return out("unknown", i)
             a = words[i]
@@ -6902,6 +7153,7 @@ def _interp_parse(name: str, argv: list, ctx: "_Ctx") -> dict | None:
             if a.startswith("-") and len(a) > 1:
                 k, nxt = 1, i + 1
                 while k < len(a):
+                    _tick()  # E8: budget check per iteration
                     ch = a[k]
                     if ch in "cm":
                         kind = "code" if ch == "c" else "module"
@@ -6928,6 +7180,7 @@ def _interp_parse(name: str, argv: list, ctx: "_Ctx") -> dict | None:
     if name in ("node", "nodejs"):
         i, inter, unsure = 1, False, False
         while i < n:
+            _tick()  # E8: budget check per iteration
             if unk(i):
                 return out("unknown", i)
             a = words[i]
@@ -6969,6 +7222,7 @@ def _interp_parse(name: str, argv: list, ctx: "_Ctx") -> dict | None:
         info = "vVh" if name == "perl" else "h"
         i, inter, code = 1, False, None
         while i < n:
+            _tick()  # E8: budget check per iteration
             if unk(i):
                 return out("unknown", i)
             a = words[i]
@@ -6987,6 +7241,7 @@ def _interp_parse(name: str, argv: list, ctx: "_Ctx") -> dict | None:
             if a.startswith("-") and len(a) > 1:
                 k, nxt = 1, i + 1
                 while k < len(a):
+                    _tick()  # E8: budget check per iteration
                     ch = a[k]
                     if ch == "e" or (ch == "E" and name == "perl"):
                         if k + 1 < len(a):
@@ -7010,6 +7265,7 @@ def _interp_parse(name: str, argv: list, ctx: "_Ctx") -> dict | None:
                     k += 1
                     if ch in digits:
                         while k < len(a) and a[k].isdigit():
+                            _tick()  # E8: budget check per iteration
                             k += 1
                 i = nxt
                 continue
@@ -7022,6 +7278,7 @@ def _interp_parse(name: str, argv: list, ctx: "_Ctx") -> dict | None:
     if name == "php":
         i, inter = 1, False
         while i < n:
+            _tick()  # E8: budget check per iteration
             if unk(i):
                 return out("unknown", i)
             a = words[i]
@@ -7052,6 +7309,7 @@ def _interp_parse(name: str, argv: list, ctx: "_Ctx") -> dict | None:
     if name == "osascript":
         i, inter, code = 1, False, None
         while i < n:
+            _tick()  # E8: budget check per iteration
             if unk(i):
                 return out("unknown", i)
             a = words[i]
@@ -7185,11 +7443,13 @@ def _ancestry(limit: int = 40) -> list:
         return []
     procs = {}
     for line in out.splitlines():
+        _tick()  # E8: budget check per iteration
         parts = line.split(None, 2)
         if len(parts) == 3 and parts[0].isdigit() and parts[1].isdigit():
             procs[int(parts[0])] = (int(parts[1]), parts[2].strip())
     names, pid, seen = [], os.getppid(), set()
     while pid in procs and pid not in seen and len(names) < limit:
+        _tick()  # E8: budget check per iteration
         seen.add(pid)
         pid, comm = procs[pid]
         names.append(os.path.basename(comm).lower())
@@ -7203,6 +7463,7 @@ def _nested_runtime() -> str:
     if _STATE.get("nested") is None:
         groups, prev = [], False
         for n in _ancestry():
+            _tick()  # E8: budget check per iteration
             cur = n in _RUNTIME_EXES
             if cur and not prev:
                 groups.append(n)
@@ -7229,6 +7490,7 @@ def _agent_opts(args: list, values: dict, flags: set, shorts_attach: bool = True
     an option not in either table comes back as ("?" + option, [])."""
     i, out, ended = 0, [], False
     while i < len(args):
+        _tick()  # E8: budget check per iteration
         w, s = args[i], str(args[i])
         if ended or s == "-" or not s.startswith("-"):
             out.append((None, w))
@@ -7254,6 +7516,7 @@ def _agent_opts(args: list, values: dict, flags: set, shorts_attach: bool = True
                 continue
             got, i = [], i + 1
             while i < len(args) and (kind == "+" or not got):
+                _tick()  # E8: budget check per iteration
                 nxt = str(args[i])
                 if kind == 1 and not got:
                     got.append(args[i])
@@ -7321,6 +7584,7 @@ def _tool_names(vals: list) -> list:
     """Tool names in --tools / --allowed-tools values ("Read,Grep", "Read(src/**)")."""
     names = []
     for v in vals:
+        _tick()  # E8: budget check per iteration
         names += [re.sub(r"\(.*$", "", t).strip() for t in re.split(r"[,\s]+", str(v)) if t.strip()]
     return names
 
@@ -7328,6 +7592,7 @@ def _tool_names(vals: list) -> list:
 def _empty_mcp(cwd: str, vals: list) -> bool:
     """Every --mcp-config value is a JSON object (inline or a readable file) with no servers."""
     for v in vals:
+        _tick()  # E8: budget check per iteration
         s = str(v).strip()
         try:
             if not s.startswith("{"):
@@ -7361,6 +7626,7 @@ def _parse_claude(root: Path, cwd: str, args: list, env: dict, run: _AgentRun) -
     tools = allowed = perm = None
     mcp, safe, bare, strict = [], False, False, False
     for o, vals in opts:
+        _tick()  # E8: budget check per iteration
         if o is None:
             continue
         val = str(vals[0]) if vals else ""
@@ -7483,6 +7749,7 @@ def _parse_codex(args: list, env: dict, run: _AgentRun) -> None:
     inner = pos[1] if exec_sub and len(pos) > 1 and pos[1] in ("resume", "fork", "review", "help") else None
     sandbox = None
     for k, (o, vals) in enumerate(opts):
+        _tick()  # E8: budget check per iteration
         if o is None:
             continue
         val = str(vals[0]) if vals else ""
@@ -7555,6 +7822,7 @@ def _parse_gemini(args: list, run: _AgentRun) -> None:
         return
     mode, prompt, interactive = None, any(o is None for o, _ in opts), False
     for o, vals in opts:
+        _tick()  # E8: budget check per iteration
         val = str(vals[0]) if vals else ""
         if o is None:
             continue
@@ -7597,6 +7865,7 @@ def _parse_generic(agent: str, args: list, env: dict, run: _AgentRun) -> None:
         run.info = True
         return
     for w in words:
+        _tick()  # E8: budget check per iteration
         if w == "--":
             break
         name, _eq, val = w.partition("=")
@@ -7604,6 +7873,7 @@ def _parse_generic(agent: str, args: list, env: dict, run: _AgentRun) -> None:
                 name == "--approval-mode" and val.lower() in ("yolo", "auto-edit", "auto_edit")):
             run.deny.append(f"it passes {w}, which approves the child agent's actions without asking")
     for i, w in enumerate(words[:-1]):
+        _tick()  # E8: budget check per iteration
         if w == "--approval-mode" and words[i + 1].lower() in ("yolo", "auto-edit", "auto_edit"):
             run.deny.append(f"it starts {agent} in {words[i + 1]} approval mode")
     if env.get("GOOSE_MODE", "").lower() in ("auto", "smart_approve"):
@@ -7640,6 +7910,7 @@ def _check_agent_cli(root: Path, cwd: str, agent: str, argv: list, orig: list, e
                   "agentcli")
     _agent_secret(root, agent, argv, orig, run)
     for why in run.deny:
+        _tick()  # E8: budget check per iteration
         v.add(DENY, why, "secret" if "secret-shaped" in why else "agentcli")
     if run.skip and not run.toolless:
         v.add(DENY, f"it starts {agent} with {', '.join(run.skip)}, which skips Tess's hooks or settings in "
@@ -7701,6 +7972,7 @@ def _sql_literal(text: str, i: int) -> str | None:
         return None
     q, out, j = text[i], [], i + 1
     while j < len(text):
+        _tick()  # E8: budget check per iteration
         if text[j] == q:
             if j + 1 < len(text) and text[j + 1] == q:
                 out.append(q)
@@ -7733,6 +8005,7 @@ def _sql_scan(root: Path, cwd: str, prog: str, text: str, v: "Verdict", depth: i
         chunks = text.split("\n")
     sql = []
     for ch in chunks:
+        _tick()  # E8: budget check per iteration
         if ch.lstrip().startswith("."):
             _sql_dot(root, cwd, prog, ch.lstrip(), v, depth, ctx)
         else:
@@ -7741,7 +8014,9 @@ def _sql_scan(root: Path, cwd: str, prog: str, text: str, v: "Verdict", depth: i
     if _SQL_ASK_SQL.search(body):
         v.add(ASK, f"its {prog} SQL loads an extension or opens an editor, which Tess cannot check")
     for pat, what in _SQL_TARGET_SQL:
+        _tick()  # E8: budget check per iteration
         for m in pat.finditer(body):
+            _tick()  # E8: budget check per iteration
             lit = _sql_literal(body, m.end())
             if lit is None:
                 v.add(ASK, f"its {prog} SQL ({what}) writes to a file named by an expression Tess "
@@ -7780,6 +8055,7 @@ def _sql_dot(root: Path, cwd: str, prog: str, line: str, v: "Verdict", depth: in
     if hit(_SQL_DOT_FILE):
         ops, i = [], 0
         while i < len(args):
+            _tick()  # E8: budget check per iteration
             a = args[i]
             if a.startswith("-"):
                 i += 2 if a in ("--skip", "--schema", "--maxsize") else 1
@@ -7802,6 +8078,7 @@ def _check_sql_cli(root: Path, cwd: str, name: str, argv: list, orig: list, v: "
     args = _operands(argv[1:])
     db, cmds, init_given, i, positional_sql = None, [], False, 0, 0
     while i < len(args):
+        _tick()  # E8: budget check per iteration
         a, s = args[i], str(args[i])
         opt = "-" + s.lstrip("-") if s.startswith("-") and s not in ("-", "--") else None
         if opt is not None:
@@ -7842,6 +8119,7 @@ def _check_sql_cli(root: Path, cwd: str, name: str, argv: list, orig: list, v: "
             _check_targets(root, cwd, [_plain(p) for t, _pat in cands for p in [_sql_path(t)] if p], v, ctx)
     sources = []
     for c in cmds:
+        _tick()  # E8: budget check per iteration
         cands, _p = _word_values(c, cwd, ctx)
         if cands is None:
             v.add(ASK, f"it gives {prog} SQL that is only known when the command runs ({c}), so Tess "
@@ -7876,6 +8154,7 @@ def _check_sql_cli(root: Path, cwd: str, name: str, argv: list, orig: list, v: "
         except OSError:
             v.add(ASK, f"{prog} first runs {rc}, which Tess cannot read")
     for text, one in sources:
+        _tick()  # E8: budget check per iteration
         _sql_scan(root, cwd, prog, text, v, depth, ctx, one)
 
 
@@ -7898,6 +8177,7 @@ def _tessctl_run_driver(words: list) -> str | None:
     unique prefix (`--dri codex`); the default is claude."""
     i = 0
     while i < len(words) and words[i].startswith("-") and words[i] != "--":
+        _tick()  # E8: budget check per iteration
         if words[i] in ("-h", "--help"):
             return None
         i += 1
@@ -7912,6 +8192,7 @@ def _tessctl_run_driver(words: list) -> str | None:
         return None
     rest, driver, j = words[i + 1:], "claude", 0
     while j < len(rest):
+        _tick()  # E8: budget check per iteration
         w = rest[j]
         if w == "--":
             break
@@ -7975,6 +8256,7 @@ def _check_segment(root: Path, cwd: str | None, argv: list, v: Verdict, raw: str
     res = _resolve(orig)
     env, argv = res.env, res.argv
     for k, val in env.items():
+        _tick()  # E8: budget check per iteration
         if k in GIT_CONFIG_FILE_ENV and val not in _EMPTY_CONFIG:
             v.add(DENY, f"it sets {k}, which makes git read another config file (that file can "
                         "switch off Tess's git hooks)", "hookspath")
@@ -7990,8 +8272,10 @@ def _check_segment(root: Path, cwd: str | None, argv: list, v: Verdict, raw: str
                         "at run time, so Tess cannot check it against the protected list", "protected")
         cwd = str(root)
     for w in orig:  # command and process substitutions run first, in this directory
+        _tick()  # E8: budget check per iteration
         _check_subs(root, cwd, w, v, depth, ctx)
     for text in res.inner:
+        _tick()  # E8: budget check per iteration
         _recurse(root, cwd, text, v, depth, ctx, env)
     _check_targets(root, cwd, _redirect_targets(orig), v, ctx)
     if not argv:
@@ -8018,6 +8302,7 @@ def _check_segment(root: Path, cwd: str | None, argv: list, v: Verdict, raw: str
                        "checks one by one, so it cannot check them")
             variants = [argv]
     for var in variants:
+        _tick()  # E8: budget check per iteration
         _check_program(root, cwd, env, var, orig, v, raw, depth, ctx, upstream, res)
 
 
@@ -8139,6 +8424,7 @@ def _check_program(root: Path, cwd: str, env: dict, argv: list, orig: list, v: V
     if name not in READERS_OK_FOR_GIT_DIR and name not in ("git", "echo", "printf"):
         for a in argv[1:]:
             # Any separator before .git/ (Cyra M2): `sed 'w .git/config'`, `--out=.git/hooks/x`.
+            _tick()  # E8: budget check per iteration
             if re.search(r"(^|[^\w.-])\.git/(hooks(/|$)|config(\s|$)|info(/|$)|refs/replace(/|$))",
                          str(a), re.IGNORECASE):
                 v.add(DENY, f"it touches {a}; Tess's git hooks and git config are off limits", "hookspath")
@@ -8179,12 +8465,14 @@ def _check_dynamic_program(root: Path, cwd: str, argv: list, v: Verdict, raw: st
     if cands and depth < _MAX_DEPTH:
         unsure = False
         for cand in cands:
+            _tick()  # E8: budget check per iteration
             words = []  # G='git commit'; $G: two words
             prog_pat, after = None, 0
             for text, pat in cand:
                 # v1.0 round 3: a glob in the program word (`/usr/bin/g[i]t`) is
                 # replaced by the names it matches; one that matches nothing now
                 # may match a file this command makes, so it is also probed.
+                _tick()  # E8: budget check per iteration
                 globbed = _glob(cwd, pat) if pat else _Matches()
                 found = sorted(globbed)
                 unsure = unsure or (pat is not None and (not found or ctx.mutated or globbed.truncated))
@@ -8202,12 +8490,14 @@ def _check_dynamic_program(root: Path, cwd: str, argv: list, v: Verdict, raw: st
             if prog_pat is not None:
                 rest = words[after:] + list(argv[1:])
                 for name in _glob_program_names(prog_pat):
+                    _tick()  # E8: budget check per iteration
                     _check_segment(root, cwd, [_plain(name)] + rest, v, raw, depth + 1, ctx, upstream)
         if not unsure:
             return
     probe = Verdict()
     if depth < _MAX_DEPTH:
         for stand_in in ("git", "gh", "sh", "python3", "cp", "rm", "tessctl", "find"):
+            _tick()  # E8: budget check per iteration
             _check_segment(root, cwd, [_plain(stand_in)] + list(argv[1:]), probe, raw, depth + 1,
                            _Ctx(raw, ctx))
     # v1.0 (nested agent CLIs): an agent CLI stands in too, but only its
@@ -8216,6 +8506,7 @@ def _check_dynamic_program(root: Path, cwd: str, argv: list, v: Verdict, raw: st
     agent_probe = Verdict()
     if depth < _MAX_DEPTH:
         for stand_in in ("claude", "codex", "gemini"):
+            _tick()  # E8: budget check per iteration
             _check_segment(root, cwd, [_plain(stand_in)] + list(argv[1:]), agent_probe, raw, depth + 1,
                            _Ctx(raw, ctx))
     if agent_probe.level == DENY:
@@ -8247,6 +8538,7 @@ def _plain_name(word, kinds: tuple = ("raw", "lit")) -> str | None:
 
 def _check_alias_def(root: Path, cwd: str, argv: list, v: "Verdict", depth: int, ctx: "_Ctx") -> None:
     for w in argv[1:]:
+        _tick()  # E8: budget check per iteration
         s = str(w)
         if re.fullmatch(r"-[A-Za-z]*[gs][A-Za-z]*", s):
             v.add(ASK, "it defines a global or suffix alias (alias -g / alias -s), which the shell "
@@ -8262,6 +8554,7 @@ def _check_alias_def(root: Path, cwd: str, argv: list, v: "Verdict", depth: int,
                        "it runs, so Tess cannot check what the alias does")
             continue
         for text, _p in cands:
+            _tick()  # E8: budget check per iteration
             if text.strip():
                 _recurse(root, cwd, text, v, depth, ctx)
 
@@ -8281,6 +8574,7 @@ def _check_alias_use(root: Path, cwd: str, argv: list, v: "Verdict", raw: str, d
     saved = ctx.aliases.pop(name)  # an alias is not expanded inside itself
     try:
         for text in vals:
+            _tick()  # E8: budget check per iteration
             try:
                 segs = _segments(text)
             except ValueError:
@@ -8297,12 +8591,14 @@ def _local_names(body: list) -> set:
     """Variables a function body declares local (restored after the call)."""
     out = set()
     for kind, x in body:
+        _tick()  # E8: budget check per iteration
         if kind != "seg":
             continue
         argv = _resolve(x).argv
         if argv and str(argv[0]) in ("local", "declare", "typeset") and not any(
                 re.fullmatch(r"-[A-Za-z]*g[A-Za-z]*", str(a)) for a in argv[1:]):
             for a in argv[1:]:
+                _tick()  # E8: budget check per iteration
                 m = _ASSIGN.match(str(a)) or _NAME.fullmatch(str(a))
                 if m:
                     out.add(m.group(1) if m.re is _ASSIGN else m.group(0))
@@ -8320,12 +8616,14 @@ def _call_function(root: Path, cwd: str, name: str, args: list, v: "Verdict", ra
         return
     vals = []
     for w in _operands(args):
+        _tick()  # E8: budget check per iteration
         cands, _ = _word_fields(w, cwd, ctx)
         if cands is None or len(cands) != 1:
             vals = None
             break
         cut = False
         for text, pat in cands[0]:
+            _tick()  # E8: budget check per iteration
             found = _glob(cwd, pat, _EXPAND_LIMIT + 1) if pat else _Matches()
             cut = cut or found.truncated  # round 4b (Reid E1): any field, not only the last
             vals += sorted(f if os.path.isabs(os.path.expanduser(pat)) else os.path.relpath(f, cwd)
@@ -8341,6 +8639,7 @@ def _call_function(root: Path, cwd: str, name: str, args: list, v: "Verdict", ra
     finally:
         ctx.argv, ctx.call_dirs = saved_argv, sink
         for n in _local_names(body):
+            _tick()  # E8: budget check per iteration
             if n in saved_vars:
                 ctx.vars[n] = saved_vars[n]
             else:
@@ -8353,6 +8652,7 @@ def _call_function(root: Path, cwd: str, name: str, args: list, v: "Verdict", ra
 def _merge_back(ctx: "_Ctx", child: "_Ctx") -> None:
     """What an `eval` set, kept for the words after it."""
     for n, val in child.vars.items():
+        _tick()  # E8: budget check per iteration
         if ctx.vars.get(n, _UNSET) != val or (n in child.nonopt) != (n in ctx.nonopt):
             ctx.assign(n, val, ctx.cond_now, nonopt=n in child.nonopt)
     ctx.aliases.update(child.aliases)
@@ -8367,6 +8667,7 @@ def _assigned_texts(args: list, cwd: str, ctx: "_Ctx") -> list:
     (`export GIT_CONFIG_KEY_0=$K`)."""
     out = []
     for w in args:
+        _tick()  # E8: budget check per iteration
         m = _ASSIGN.match(str(w))
         if m and _dynamic(w):
             cands, _ = _word_values(_sub_word(w, m.end()), cwd, ctx, assign=True)
@@ -8381,6 +8682,7 @@ def _bind_positional(argv: list, ctx: "_Ctx") -> list:
         return argv
     out = []
     for w in argv:
+        _tick()  # E8: budget check per iteration
         ps = [(k, t) for k, t in getattr(w, "parts", ()) if not (k == "lit" and t == "")]
         if isinstance(w, _Word) and len(ps) == 1 and (
                 (ps[0][0] == "dyn" and ps[0][1] in ("@", "*")) or
@@ -8388,6 +8690,7 @@ def _bind_positional(argv: list, ctx: "_Ctx") -> list:
             cands, _ = _word_fields(w, None, ctx)
             if cands is not None and len(cands) == 1:
                 for text, pat in cands[0]:
+                    _tick()  # E8: budget check per iteration
                     if pat is None:
                         out.append(_plain(text))
                     else:  # an unquoted value is globbed, never tilde-expanded
@@ -8428,6 +8731,7 @@ def _paren_ok(words: list, nxt) -> bool:
         return True  # a subshell after reserved words (`then (`, `! (`, `time (`)
     lead = 0
     while lead < len(words) - 1 and words[lead] in _PAREN_LEAD_WORDS:
+        _tick()  # E8: budget check per iteration
         lead += 1  # round 4b (Reid U3): `then arr=(`, `do arr=(`, `{ arr=(`
     if _ASSIGN_WORD.match(words[-1]):
         # an array value: in assignment position, or after a declaration
@@ -8450,6 +8754,7 @@ def _option_change(argv: list) -> "str | None":
     """The shell-option change this segment makes, or None."""
     words = [str(w) for w in argv if not (_is_op(w) and str(w) in _REDIR_OPS)]
     for w in words:
+        _tick()  # E8: budget check per iteration
         if re.match(r"^(options|GLOBIGNORE|BASHOPTS|SHELLOPTS|GLOB_DOTS|ZLE_\w*)(\[|=|\+=)", w):
             return w.split("=", 1)[0]
     _env, rest = _strip_prefix(argv)
@@ -8470,6 +8775,7 @@ def _option_change(argv: list) -> "str | None":
     if name == "set":
         i = 0
         while i < len(args):
+            _tick()  # E8: budget check per iteration
             a = args[i]
             if a == "--" or not re.match(r"^[-+]", a):
                 return None  # the rest are positional parameters
@@ -8512,6 +8818,7 @@ def _literal_code(word) -> bool:
 def _check_shell_model(events: list, v: "Verdict") -> None:
     prev = None
     for n, (kind, x) in enumerate(events):
+        _tick()  # E8: budget check per iteration
         if kind == "seg":
             opt = _option_change(x)
             if opt:
@@ -8543,6 +8850,7 @@ def _strip_comments(cmd: str) -> "str | None":
     out, i, n, start, changed, docs = [], 0, len(cmd), True, False, []
     try:
         while i < n:
+            _tick()  # E8: budget check per iteration
             c = cmd[i]
             if c == "#" and start:
                 j = cmd.find("\n", i)
@@ -8552,7 +8860,9 @@ def _strip_comments(cmd: str) -> "str | None":
                 out.append(c)
                 i += 1
                 for delim, strip in docs:  # here-document bodies are data
+                    _tick()  # E8: budget check per iteration
                     while i < n:
+                        _tick()  # E8: budget check per iteration
                         j = cmd.find("\n", i)
                         j = n if j < 0 else j
                         line = cmd[i:j]
@@ -8627,6 +8937,7 @@ def check_command(root: Path, cwd: str, cmd: str, v: Verdict, depth: int = 0, ct
         if "--no-verify" in low or "hookspath" in low or re.search(r"\.git/(hooks|config\b)", low):
             v.add(DENY, "the command could not be parsed and mentions a git hook bypass", "error")
         for word in re.findall(r"[^\s;&|()<>'\"`]+", cmd):
+            _tick()  # E8: budget check per iteration
             hit = protected_hit(root, cwd, word)
             if hit:
                 v.add(DENY, f"the command could not be parsed and names {word}, a protected "
@@ -8659,11 +8970,13 @@ def check_command(root: Path, cwd: str, cmd: str, v: Verdict, depth: int = 0, ct
             v.add(ASK, "the command could not be parsed (unbalanced quotes), so Tess cannot check it")
             return
         for tok in toks + [";"]:
+            _tick()  # E8: budget check per iteration
             if tok in OPERATORS:
                 segs, cur = (segs + [cur] if cur else segs), []
             else:
                 cur.append(_mkword([("fallback", tok)]))
         for argv in segs:
+            _tick()  # E8: budget check per iteration
             _check_segment(root, cwd, argv, v, cmd, depth, ctx)
         return
     # round 4 (parser differential): the shell's reading without comments is
@@ -8709,6 +9022,7 @@ def _lead_words(words: list) -> list:
     """The reserved words a segment starts with (`then if`, `}`, `for`)."""
     out = []
     for w in words:
+        _tick()  # E8: budget check per iteration
         s = _plain_name(w, ("raw",))
         if s is None or s not in _KEYWORDS | {"for", "select", "case"}:
             break
@@ -8724,6 +9038,7 @@ def _body_end(evs: list, t: int) -> int | None:
     if evs[t] == ("op", "("):
         depth = 0
         for m in range(t, len(evs)):
+            _tick()  # E8: budget check per iteration
             if evs[m][0] == "op" and evs[m][1] == "(":
                 depth += 1
             elif evs[m][0] == "op" and evs[m][1] == ")":
@@ -8735,6 +9050,7 @@ def _body_end(evs: list, t: int) -> int | None:
         return None
     depth = 0
     for m in range(t, len(evs)):
+        _tick()  # E8: budget check per iteration
         if evs[m][0] == "seg":
             lead = _lead_words(evs[m][1])
             depth += lead.count("{") - lead.count("}")
@@ -8790,6 +9106,7 @@ def _walk(root: Path, events: list, i: int, start: frozenset, v: Verdict, cmd: s
     pending, last_run, prev = None, start, None
     stack = []  # open compound commands: [may not run, (for variable, value before) or None]
     while i < len(events):
+        _tick()  # E8: budget check per iteration
         kind, x = events[i]
         if kind == "op":
             if x == ")" and nested:
@@ -8833,9 +9150,11 @@ def _walk(root: Path, events: list, i: int, start: frozenset, v: Verdict, cmd: s
         piped = pending == "|" or nxt in ("|", "|&")
         lead = _lead_words(x)
         for kw in lead:
+            _tick()  # E8: budget check per iteration
             if kw in _CLOSERS and stack:
                 _close(ctx, stack.pop())
         for n, kw in enumerate(lead):
+            _tick()  # E8: budget check per iteration
             if kw in _OPENERS:
                 loopvar = None
                 if kw == "for" and n + 1 < len(x) and _NAME.fullmatch(str(x[n + 1])):
@@ -8853,6 +9172,7 @@ def _walk(root: Path, events: list, i: int, start: frozenset, v: Verdict, cmd: s
         last_run, pending, prev = run, None, x
         i += 1
     for ent in reversed(stack):
+        _tick()  # E8: budget check per iteration
         _close(ctx, ent)
     return i, (state if S is None else S | F)
 
@@ -8884,13 +9204,17 @@ def _run_segment(root: Path, argv: list, run: frozenset, v: Verdict, cmd: str, d
     else:
         verdicts = []
         for c in sorted(run, key=lambda d: (d is None, d or "")):
+            _tick()  # E8: budget check per iteration
             sub = Verdict()
             _check_segment(root, c, argv, sub, cmd, depth, ctx, upstream)
             verdicts.append(sub)
         for sub in verdicts:
+            _tick()  # E8: budget check per iteration
             for r in sub.reasons:
+                _tick()  # E8: budget check per iteration
                 v.add(sub.level, r)
             for a in sub.advice:
+                _tick()  # E8: budget check per iteration
                 if a not in v.advice:
                     v.advice.append(a)
         if len({sub.level for sub in verdicts}) > 1 and ADVICE["cdfail"] not in v.advice:
@@ -8938,6 +9262,7 @@ def _track_vars(orig: list, res: "_Cmd", cwd: str | None, ctx: "_Ctx", cond: boo
     else:
         assigns = []
     for w in assigns:
+        _tick()  # E8: budget check per iteration
         m = _ASSIGN.match(str(w))
         n, value = m.group(1), _sub_word(w, m.end())
         cands, _ = _word_values(value, cwd, ctx, assign=True)
@@ -8956,31 +9281,39 @@ def _track_vars(orig: list, res: "_Cmd", cwd: str | None, ctx: "_Ctx", cond: boo
         ctx.assign(n, vals, cond, nonopt=nonopt)
     # Assignments hidden in expansions and arithmetic: ${X:=v}, $((X=1)), (( X++ )).
     for w in orig:
+        _tick()  # E8: budget check per iteration
         for k, t in getattr(w, "parts", ()):
+            _tick()  # E8: budget check per iteration
             m = re.match(r"^([A-Za-z_]\w*):?=", t) if k == "dyn" else None
             if m:
                 ctx.assign(m.group(1), None, True)
             if k == "arith" or (k == "sub" and t.startswith("(") and t.endswith(")")):
                 for g in _ARITH_ASSIGN.findall(t):
+                    _tick()  # E8: budget check per iteration
                     ctx.assign(next(x for x in g if x), None, cond)
     if name == "let":
         for w in argv[1:]:
+            _tick()  # E8: budget check per iteration
             for g in _ARITH_ASSIGN.findall(str(w)):
+                _tick()  # E8: budget check per iteration
                 ctx.assign(next(x for x in g if x), None, cond)
     if name == "printf":
         for k, w in enumerate(argv[1:-1], 1):
+            _tick()  # E8: budget check per iteration
             if str(w) == "-v" and _NAME.fullmatch(str(argv[k + 1])):
                 ctx.assign(str(argv[k + 1]), None, cond)
     if name in ("for", "select") and len(argv) >= 2 and _NAME.fullmatch(str(argv[1])):
         has_in = len(argv) > 2 and str(argv[2]) == "in"
         vals = [] if has_in else (list(ctx.argv) if ctx.argv is not None else None)
         for w in (argv[3:] if has_in else []):
+            _tick()  # E8: budget check per iteration
             cands, _ = _word_values(w, cwd, ctx)
             if cands is None:
                 vals = None
                 break
             cut = False
             for t, pat in cands:
+                _tick()  # E8: budget check per iteration
                 found = _glob(cwd or ".", pat, _EXPAND_LIMIT + 1) if pat else _Matches()
                 cut = cut or found.truncated
                 vals += list(found) or [t]
@@ -8991,11 +9324,13 @@ def _track_vars(orig: list, res: "_Cmd", cwd: str | None, ctx: "_Ctx", cond: boo
             ctx.assign(str(argv[1]), vals, cond)
     if name in ("read", "mapfile", "readarray", "getopts", "select"):
         for w in argv[1:]:
+            _tick()  # E8: budget check per iteration
             if _NAME.fullmatch(str(w)):
                 ctx.assign(str(w), None, False)
     if name == "unset":
         funcs = any(str(w) == "-f" for w in argv[1:])
         for w in argv[1:]:
+            _tick()  # E8: budget check per iteration
             if not _NAME.fullmatch(str(w)):
                 continue
             if funcs:
@@ -9014,11 +9349,13 @@ def _track_vars(orig: list, res: "_Cmd", cwd: str | None, ctx: "_Ctx", cond: boo
         else:
             k = 0
             while k < len(words) and words[k][:1] in ("-", "+"):
+                _tick()  # E8: budget check per iteration
                 k += 2 if words[k] in ("-o", "+o") else 1
             pos = _operands(argv[1:])[k:] or None
         if pos is not None:
             vals = []
             for w in pos:
+                _tick()  # E8: budget check per iteration
                 cands, _ = _word_fields(w, cwd, ctx)
                 if cands is None or len(cands) != 1 or cond:
                     vals = None
@@ -9030,6 +9367,7 @@ def _track_vars(orig: list, res: "_Cmd", cwd: str | None, ctx: "_Ctx", cond: boo
         ctx.argv = ctx.argv[int(k):] if k.isdigit() and not cond else None
     if name == "alias":
         for w in argv[1:]:
+            _tick()  # E8: budget check per iteration
             s = str(w)
             if s.startswith("-") or "=" not in s:
                 continue
@@ -9043,6 +9381,7 @@ def _track_vars(orig: list, res: "_Cmd", cwd: str | None, ctx: "_Ctx", cond: boo
         if any(str(w) == "-a" for w in argv[1:]):
             ctx.aliases.clear()
         for w in argv[1:]:
+            _tick()  # E8: budget check per iteration
             ctx.aliases.pop(str(w), None)
 
 
@@ -9051,6 +9390,7 @@ def _check_archive_pipe(segs: list, v: Verdict) -> None:
     by a tool that never names it."""
     seen_archive = False
     for seg in segs:
+        _tick()  # E8: budget check per iteration
         _, argv = _strip_prefix(seg)
         if not argv:
             continue
@@ -9074,6 +9414,7 @@ def _cdpath_in_force(argv: list, ctx: "_Ctx | None") -> bool:
     knows to be empty leaves it off."""
     env, _ = _strip_prefix(argv)
     for name, val in env.items():
+        _tick()  # E8: budget check per iteration
         if name in ("CDPATH", "cdpath"):
             return str(val).strip(": ") not in ("", "''", '""')
     if ctx is not None:
@@ -9127,13 +9468,20 @@ def _command_text(tool_input) -> str:
 
 
 def _strings(obj) -> list:
-    if isinstance(obj, str):
-        return [obj]
-    if isinstance(obj, dict):
-        return [s for val in obj.values() for s in _strings(val)]
-    if isinstance(obj, list):
-        return [s for val in obj for s in _strings(val)]
-    return []
+    """Every string in a JSON value, depth first, in document order. E8: one
+    pass with a budget check per node (the recursive version re-copied each
+    nested list, so its cost grew with depth times size and never ticked)."""
+    out, stack = [], [obj]
+    while stack:
+        _tick()  # E8: budget check per iteration
+        o = stack.pop()
+        if isinstance(o, str):
+            out.append(o)
+        elif isinstance(o, dict):
+            stack.extend(reversed(list(o.values())))
+        elif isinstance(o, list):
+            stack.extend(reversed(o))
+    return out
 
 
 # --------------------------------------------------------------------------- evaluate
@@ -9228,6 +9576,7 @@ def _evaluate(data: dict, root: Path, v: Verdict) -> None:
         if isinstance(tin, dict):
             paths += [tin[k] for k in ("file_path", "notebook_path", "path") if isinstance(tin.get(k), str)]
         for text in _strings(tin):
+            _tick()  # E8: budget check per iteration
             paths += _patch_paths(text, v)
         if not paths:
             v.add(DENY, "Tess could not tell which files this edit changes, so it cannot check "
@@ -9235,11 +9584,13 @@ def _evaluate(data: dict, root: Path, v: Verdict) -> None:
         _check_patch_paths(root, cwd, paths, v)
     elif tool.startswith("mcp__"):
         for val in _strings(tin):
+            _tick()  # E8: budget check per iteration
             if key_hit(cwd, val, ancestors=True) or _KEY_TEXT.search(val):
                 v.add(DENY, "it reaches Tess's key directory (~/.config/tess)", "keys")
                 break
         if isinstance(tin, dict) and any(w in tool.lower() for w in MCP_WRITE_WORDS):
             for k, val in tin.items():
+                _tick()  # E8: budget check per iteration
                 if k.lower() in MCP_PATH_KEYS and isinstance(val, str):
                     hit = protected_hit(root, cwd, val)
                     if hit:
@@ -9315,37 +9666,91 @@ def _log(root: Path, data: dict, runtime: str, decision: str, reason: str) -> No
 
 
 def _emit(decision: str, reason: str) -> None:
+    _quiet_signals()  # E8: a decision being written is not interrupted half-way
     print(json.dumps({"hookSpecificOutput": {
         "hookEventName": "PreToolUse",
         "permissionDecision": decision,
         "permissionDecisionReason": reason,
-    }}))
+    }}), flush=True)
+
+
+# E8: every way this hook can end must print a decision. A hook that dies on a
+# signal, or lets a BaseException escape, prints nothing, and both hosts treat
+# "nothing" as allow. SIGTERM, SIGHUP and SIGINT become KeyboardInterrupt, which
+# the BaseException handlers below turn into a deny. SIGKILL and a crash of the
+# interpreter cannot be caught here: run-pinned.py (--on-fail block) turns those,
+# and a missed deadline, into exit 2.
+_STOP_SIGNALS = ("SIGTERM", "SIGHUP", "SIGINT")
+
+
+def _on_signal(signum, _frame):
+    raise KeyboardInterrupt(f"signal {signum}")
+
+
+def _catch_signals() -> None:
+    import signal
+    for name in _STOP_SIGNALS:
+        if hasattr(signal, name):
+            signal.signal(getattr(signal, name), _on_signal)
+
+
+def _quiet_signals() -> None:
+    """Once a decision is reached (or the hook is failing closed), a late stop
+    signal must not cut it off: ignore the catchable ones from here on."""
+    try:
+        import signal
+        for name in _STOP_SIGNALS:
+            if hasattr(signal, name):
+                signal.signal(getattr(signal, name), signal.SIG_IGN)
+    except BaseException:  # noqa: BLE001 -- never let this stop a decision being printed
+        pass
+
+
+_ERRORED = ("TESS GATE: blocked because the safety check errored ({}). "
+            "Check `./tessctl doctor`; if it keeps failing, run the command yourself.")
 
 
 def main(argv: list) -> int:
+    _catch_signals()
     runtime = "claude"
     if len(argv) >= 2 and argv[0] == "--runtime":
         runtime = argv[1]
-    root = _root()
     try:
+        root = _root()
         data = json.loads(sys.stdin.read())
         if not isinstance(data, dict):
             raise ValueError("payload is not an object")
-    except Exception as exc:
+    except BaseException as exc:  # E8: an interrupted read or a stop signal is a deny too
+        _quiet_signals()
         _emit("deny", f"TESS GATE: blocked because the tool-call JSON was unreadable "
                       f"({type(exc).__name__}), so the safety check could not run.")
         return 0
     try:
         decision, reason = decide(data, root, runtime)
-    except Exception as exc:  # fail closed
-        decision, reason = "deny", (
-            f"TESS GATE: blocked because the safety check errored ({type(exc).__name__}). "
-            f"Check `./tessctl doctor`; if it keeps failing, run the command yourself.")
+    except BaseException as exc:  # fail closed (E8: KeyboardInterrupt, SystemExit, a stop signal)
+        _quiet_signals()
+        # The policy (SECURITY.md, docs/HARNESS_HARDENING.md): a caught internal
+        # error is a DENY in both runtimes, Claude Code included.
+        decision, reason = "deny", _ERRORED.format(type(exc).__name__)
     if decision:
+        _quiet_signals()
         _log(root, data, runtime, decision, reason)
         _emit(decision, reason)
     return 0
 
 
+def _backstop(argv: list) -> int:
+    """main(), and if anything still escapes it, a deny all the same."""
+    try:
+        return main(argv)
+    except BaseException as exc:  # noqa: BLE001 -- E8 last resort: never end without a decision
+        _quiet_signals()
+        try:
+            _emit("deny", _ERRORED.format(type(exc).__name__))
+        except BaseException:  # noqa: BLE001 -- stdout is gone; the launcher maps this exit to a block
+            return 2
+        return 0
+
+
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))
+    sys.exit(_backstop(sys.argv[1:]))

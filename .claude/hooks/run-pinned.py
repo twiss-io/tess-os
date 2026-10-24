@@ -89,6 +89,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 LOCK_REL = ".tess/tess.lock"
@@ -1028,7 +1029,93 @@ def _fail_anchor(mode: str, target: str, exc: AnchorError) -> int:
     return 0
 
 
-def _run(path: Path, args: list, code: "bytes | None" = None) -> int:
+# E8: a --on-fail block target (the gate, the dispatch scan) must end in a
+# decision. Claude Code and Codex treat an exit other than 0 or 2, a death by
+# signal and a hook timeout as "no decision", and the call goes ahead. So in
+# block mode the launcher turns each of those into exit 2, and it stops the
+# whole hook (its own checks included) at BLOCK_DEADLINE, below the hosts'
+# 120 s hook timeout (.claude/settings.json, .codex/config.toml), so that the
+# host's timeout never fires first. The gate's own budget (GATE_BUDGET in
+# tess-gate.py) is shorter again, so a slow check normally ends in the gate's
+# ASK and this deadline is the backstop. tests/test_e8_fail_closed.py holds
+# GATE_BUDGET < BLOCK_DEADLINE < host timeout.
+BLOCK_DEADLINE = 100.0
+_STARTED = time.monotonic()
+_STOP_SIGNALS = ("SIGTERM", "SIGHUP", "SIGINT")
+
+
+class _Stop(BaseException):
+    """The block-mode deadline passed, or the launcher was told to stop."""
+
+
+def _on_stop(signum, _frame):
+    import signal
+    if signum == getattr(signal, "SIGALRM", None):
+        raise _Stop(f"it did not decide within {int(BLOCK_DEADLINE)} seconds")
+    raise _Stop(f"the hook was stopped by signal {signum}")
+
+
+def _arm_block_mode() -> None:
+    """Block mode only: a watchdog for the deadline, and stop signals that end
+    in a block. Warn hooks keep the default behaviour."""
+    import signal
+    for name in _STOP_SIGNALS:
+        if hasattr(signal, name):
+            signal.signal(getattr(signal, name), _on_stop)
+    if hasattr(signal, "setitimer") and hasattr(signal, "SIGALRM"):
+        signal.signal(signal.SIGALRM, _on_stop)
+        signal.setitimer(signal.ITIMER_REAL, max(0.01, _left()))
+
+
+def _disarm() -> None:
+    import signal
+    if hasattr(signal, "setitimer"):
+        signal.setitimer(signal.ITIMER_REAL, 0)
+    for name in _STOP_SIGNALS:
+        if hasattr(signal, name):
+            signal.signal(getattr(signal, name), signal.SIG_IGN)
+
+
+def _left() -> float:
+    return BLOCK_DEADLINE - (time.monotonic() - _STARTED)
+
+
+def _blocked(target: str, why: str) -> int:
+    print(f"TESS GATE: blocked because {target} stopped before it decided ({why}). This tool "
+          "call is blocked; run `./tessctl doctor`, and if it keeps happening run the command "
+          "yourself.", file=sys.stderr)
+    return 2
+
+
+def _child_exit(mode: str, target: str, rc: int) -> int:
+    if mode != "block" or rc in (0, 2):
+        return rc
+    how = f"it was stopped by signal {-rc}" if rc < 0 else f"it exited with status {rc}"
+    return _blocked(target, how)
+
+
+def _spawn(cmd: list, mode: str, target: str) -> int:
+    if mode != "block":
+        return subprocess.run(cmd).returncode
+    if _left() <= 1:
+        return _blocked(target, f"it did not decide within {int(BLOCK_DEADLINE)} seconds")
+    proc = subprocess.Popen(cmd)
+    try:
+        # The watchdog (_arm_block_mode) normally fires first; the timeout here
+        # covers a platform without setitimer.
+        rc = proc.wait(timeout=max(0.01, _left()))
+    except (subprocess.TimeoutExpired, _Stop) as exc:
+        proc.kill()
+        proc.wait()
+        _disarm()
+        why = (f"it did not decide within {int(BLOCK_DEADLINE)} seconds"
+               if isinstance(exc, subprocess.TimeoutExpired) else str(exc))
+        return _blocked(target, why)
+    _disarm()  # decided: a late deadline or stop signal must not turn it into a block
+    return _child_exit(mode, target, rc)
+
+
+def _run(path: Path, args: list, code: "bytes | None" = None, mode: str = "warn") -> int:
     if path.suffix == ".py":
         with tempfile.TemporaryDirectory(prefix="tess-hook-") as tmp:
             if code is None:
@@ -1039,11 +1126,11 @@ def _run(path: Path, args: list, code: "bytes | None" = None) -> int:
                 fh.write(code)
             cmd = [sys.executable, "-I", "-B", "-X", f"pycache_prefix={tmp}/none", "-c", _BOOTSTRAP,
                    str(src), str(path), *args]
-            return subprocess.run(cmd).returncode
+            return _spawn(cmd, mode, path.name)
     bash = "/bin/bash" if os.path.exists("/bin/bash") else shutil.which("bash")
     if not bash:
         raise PinError("bash was not found")
-    return subprocess.run([bash, str(path), *args]).returncode
+    return _spawn([bash, str(path), *args], mode, path.name)
 
 
 def main(argv: list) -> int:
@@ -1077,12 +1164,34 @@ def main(argv: list) -> int:
         return _fail_anchor(mode, target, AnchorError(ANCHOR_LOST, [f"{type(exc).__name__}: {exc}"]))
     try:
         path, code = verify_capture(root, target, closure)
-        return _run(path, rest, code)
+        return _run(path, rest, code, mode)
     except PinError as exc:
         return _fail(mode, target, str(exc))
     except Exception as exc:  # fail closed on anything unexpected
         return _fail(mode, target, f"verification errored ({type(exc).__name__}: {exc})")
 
 
+def _guarded(block: bool, target: str, fn) -> int:
+    """fn(); in block mode, a deadline or stop signal anywhere in it ends in
+    exit 2 with the reason on stderr, never in silence (E8)."""
+    if not block:
+        return fn()
+    try:
+        _arm_block_mode()
+        return fn()
+    except _Stop as exc:
+        _disarm()
+        return _blocked(target, str(exc))
+
+
+def _main_block_safe(argv: list) -> int:
+    """main(), guarded in block mode: the pin and anchor checks count towards
+    the deadline too."""
+    flags = argv[:argv.index("--")] if "--" in argv else list(argv)
+    block = any(a == "--on-fail" and b == "block" for a, b in zip(flags, flags[1:]))
+    named = argv[len(flags) + 1:len(flags) + 2]
+    return _guarded(block, Path(named[0]).name if named else "the hook", lambda: main(argv))
+
+
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))
+    sys.exit(_main_block_safe(sys.argv[1:]))
