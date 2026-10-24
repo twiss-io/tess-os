@@ -7084,6 +7084,13 @@ def cmd_doctor(args, root: Path) -> None:
     integrity_count = sum(1 for r in results if r.get("lock_status") == "integrity")
 
     errors += _doctor_engb_findings(root, lock, results, as_json, path_filter, fix)  # v0.2 eng-b
+    # 1.0.0 (LAUNCH READINESS): whole-project checks, skipped with a path filter.
+    _launch_errors, _launch_warnings = ([], []) if path_filter else _launch_doctor_findings(root)
+    if _launch_errors:
+        results.append({"core_key": None, "live_path": LAUNCH_FILE,
+                        "lock_status": "launch-readiness", "drift": False, "core_tamper": False,
+                        "issues": _launch_errors})
+        errors += 1
     if _anchor_lines:   # v1.0.0 enforcement anchor (computed at the top)
         results.append({"core_key": None, "live_path": "<enforcement-anchor>",
                         "lock_status": "anchor", "drift": False, "core_tamper": False,
@@ -7221,6 +7228,8 @@ def cmd_doctor(args, root: Path) -> None:
     _codex_warning = _codex_hook_trust_warning(root)
     if _codex_warning:
         print(f"  WARNING     {_codex_warning}")
+    for _w in _launch_warnings:   # 1.0.0: launch readiness / placeholder prod rule
+        print(f"  WARNING     {_w}")
 
     # Phase 0.3 — memory-link check (informational only; see
     # _print_memory_link_report's own header banner for why this never
@@ -7378,14 +7387,455 @@ def cmd_doctor(args, root: Path) -> None:
         print(f"\ndoctor: FAIL — {integrity_count} integrity issue(s): untracked .tess/core "
               f"file(s) or unknown render target name(s) (see ISSUE lines above).")
         sys.exit(1)
+    if _launch_errors:
+        print("\ndoctor: FAIL — " + " ".join(_launch_errors) + f" See {LAUNCH_DOC}.")
+        sys.exit(1)
     if verbose:
         print("\ndoctor: OK")
     else:
         _ok_line = _doctor_ok_sentence(len(results), captured)
         if _codex_warning:
             _ok_line += " One warning above: Codex's safety hooks."
+        if _launch_warnings:
+            _n = len(_launch_warnings)
+            _ok_line += (f" {_n} {'more ' if _codex_warning else ''}warning{'s' if _n > 1 else ''} "
+                         f"above: production paths or launch readiness.")
         print(f"\n{_ok_line}")
         print("doctor: OK")
+
+
+# ===========================================================================
+# LAUNCH READINESS (1.0.0) — the checklist a project answers before it calls
+# itself launched. Each item is a way an app an agent built has cost its
+# owner money or a lawsuit after launch: a metered hosting or AI bill with no
+# cap, a function that triggers itself, row-level security that only looks
+# on, bulk messages without consent, an app a keyboard or screen-reader user
+# cannot use, and a release nobody security-audited.
+#
+# Tess cannot check most of these from a git tree, so the record is ADVISORY
+# while the project is "preparing": `tessctl launch check` and `doctor` list
+# what is still open. It FAILS CLOSED once the record says "launched": every
+# item must then be answered with evidence or marked N/A with a reason, and
+# the production rule in core/policy/policy.yaml must name real paths. Until
+# then `tessctl launch check` and `doctor` exit 1 and the ship gate (`tessctl
+# gate pre-push` / `ci`) refuses every push of that head. A record that
+# cannot be read is treated the same way (it may say "launched").
+#
+# The record is an ordinary project file (launch-readiness.json at the
+# project root), committed with the code it describes. Evidence is the
+# operator's and verifiers' word plus any files it names, which must exist in
+# the same tree. See docs/LAUNCH_READINESS.md.
+# ===========================================================================
+
+LAUNCH_FILE = "launch-readiness.json"
+LAUNCH_FORMAT = "tess-launch-readiness/1"
+LAUNCH_DOC = "docs/LAUNCH_READINESS.md"
+LAUNCH_MAX_BYTES = 256 * 1024
+LAUNCH_MIN_TEXT = 15
+LAUNCH_STATUSES = ("preparing", "launched")
+LAUNCH_ITEM_STATES = ("open", "done", "n/a")
+POLICY_PLACEHOLDER = "__REPLACE_ME__"
+
+# (id, title, what counts as an answer, who checks it)
+LAUNCH_ITEMS = (
+    ("spend-limits", "Spend limits on hosting, functions and AI APIs",
+     "Each metered service (hosting bandwidth, serverless invocations, database "
+     "egress, AI API keys) has a hard cap or an automatic shutdown, or at least a "
+     "billing alert, and the evidence says which. An alert alone does not stop a "
+     "bill. Rate limits are set at the CDN or host.", "Vega"),
+    ("self-trigger-guards", "Functions cannot trigger themselves",
+     "Every event-triggered function (storage, database, queue, webhook, cron) is "
+     "guarded: it never writes to its own trigger source, or it checks a marker and "
+     "stops, and its instances or concurrency are capped.", "Reid"),
+    ("public-key-data-access", "Data access proven with the public key",
+     "Row-level security (or the platform's rules) is proven with the PUBLIC/anon "
+     "key against staging, never production: anonymous and cross-user reads of "
+     "every exposed table return zero rows. A 'security enabled' flag alone is not "
+     "proof. Record the probe output.", "Cyra"),
+    ("messaging-consent", "Consent before bulk SMS or email",
+     "Before any bulk SMS, email or call to people, a consent record exists for each "
+     "recipient and the sending code checks it. The legal reading stays with the "
+     "business owner.", "Reid + aveline lens"),
+    ("accessibility", "Accessibility check run",
+     "An automated scan (axe, pa11y or Lighthouse) and a keyboard-only pass ran on "
+     "the main pages: alt text, keyboard reach, visible focus, contrast. Record the "
+     "report.", "Quinn"),
+    ("security-audit", "Security audit of this release",
+     "The security-audit skill ran on this release (a full audit, or a scoped audit "
+     "of the change since the last launch), `tessctl audit validate <run-dir>` "
+     "passed, and no confirmed critical or high finding is open. The run folder "
+     "stays outside the repository; name its findings.json sha256 here.", "Cyra"),
+)
+LAUNCH_ITEM_IDS = tuple(i[0] for i in LAUNCH_ITEMS)
+
+# Files in a tree that show the project has a backend whose data rules the
+# public key can reach; an N/A for public-key-data-access then gets a note.
+_LAUNCH_DATA_SIGNALS = ("supabase", "firebase.json", "firestore.rules", "storage.rules",
+                        "database.rules.json")
+_LAUNCH_PLACEHOLDER_TEXT = re.compile(r"(?i)^\s*(todo|tbd|tba|fixme|n/?a|none|done|yes|ok)\b")
+
+
+def _launch_template() -> dict:
+    return {
+        "format": LAUNCH_FORMAT,
+        "status": "preparing",
+        "items": {
+            iid: {"status": "open", "evidence": "", "evidence_files": [], "reason": ""}
+            for iid in LAUNCH_ITEM_IDS
+        },
+    }
+
+
+def _launch_text_ok(value) -> bool:
+    return (isinstance(value, str) and len(value.strip()) >= LAUNCH_MIN_TEXT
+            and not _LAUNCH_PLACEHOLDER_TEXT.match(value))
+
+
+def _launch_rel_ok(rel) -> bool:
+    if not isinstance(rel, str) or not rel or rel.startswith(("/", "\\")) or "\x00" in rel:
+        return False
+    parts = rel.replace("\\", "/").split("/")
+    return ".." not in parts and not re.match(r"^[A-Za-z]:", rel)
+
+
+def _launch_policy_placeholders(policy_instance) -> list:
+    """Ids of policy rules (not hard floors) whose globs still hold the
+    shipped __REPLACE_ME__ placeholder: the ship gate reviews no app code
+    for them."""
+    if not isinstance(policy_instance, dict):
+        return []
+    rules = (policy_instance.get("policy") or {}).get("rules") or []
+    out = []
+    for rule in rules:
+        if isinstance(rule, dict) and any(
+                POLICY_PLACEHOLDER in str(g) for g in (rule.get("globs") or [])):
+            out.append(str(rule.get("id") or "?"))
+    return out
+
+
+def _launch_evaluate(text, exists, placeholders=()) -> dict:
+    """Judge one launch record. `text` is the file's text (None = no record);
+    `exists(rel)` says whether a path exists in the same tree; `placeholders`
+    are the policy rules still on __REPLACE_ME__. Pure: no I/O of its own."""
+    ev = {"present": text is not None, "status": None, "launched": False, "errors": [],
+          "items": [], "open": [], "invalid": [], "advisories": [], "blocking": False,
+          "placeholders": list(placeholders)}
+    if text is None:
+        return ev
+    try:
+        doc = json.loads(text)
+    except ValueError as e:
+        ev["errors"].append(f"{LAUNCH_FILE} is not valid JSON ({e.msg}, line {e.lineno})")
+        doc = None
+    if doc is not None and not isinstance(doc, dict):
+        ev["errors"].append(f"{LAUNCH_FILE} must hold a JSON object")
+        doc = None
+    if doc is not None:
+        if doc.get("format") != LAUNCH_FORMAT:
+            ev["errors"].append(f"{LAUNCH_FILE}: \"format\" must be \"{LAUNCH_FORMAT}\"")
+        status = doc.get("status")
+        if status not in LAUNCH_STATUSES:
+            ev["errors"].append(f"{LAUNCH_FILE}: \"status\" must be \"preparing\" or \"launched\"")
+        else:
+            ev["status"] = status
+            ev["launched"] = status == "launched"
+        items = doc.get("items")
+        if not isinstance(items, dict):
+            ev["errors"].append(f"{LAUNCH_FILE}: \"items\" must be an object keyed by item id")
+            items = {}
+        for extra in sorted(k for k in items if k not in LAUNCH_ITEM_IDS):
+            ev["errors"].append(f"{LAUNCH_FILE}: unknown item \"{extra}\" "
+                                f"(the items are: {', '.join(LAUNCH_ITEM_IDS)})")
+        for iid, title, _what, owner in LAUNCH_ITEMS:
+            row = {"id": iid, "title": title, "owner": owner, "state": "open", "problems": []}
+            item = items.get(iid)
+            if item is None:
+                row["problems"].append("missing from the record (an item is never skipped; "
+                                       "mark it N/A with a reason if it does not apply)")
+            elif not isinstance(item, dict):
+                row["problems"].append("must be an object")
+            else:
+                state = item.get("status", "open")
+                if state not in LAUNCH_ITEM_STATES:
+                    row["problems"].append("\"status\" must be \"open\", \"done\" or \"n/a\"")
+                elif state == "done":
+                    row["state"] = "done"
+                    if not _launch_text_ok(item.get("evidence")):
+                        row["problems"].append(
+                            f"\"evidence\" must say what was checked and how (at least "
+                            f"{LAUNCH_MIN_TEXT} characters, not a placeholder)")
+                    files = item.get("evidence_files", [])
+                    if not isinstance(files, list):
+                        row["problems"].append("\"evidence_files\" must be a list of paths")
+                        files = []
+                    for rel in files:
+                        if not _launch_rel_ok(rel):
+                            row["problems"].append(
+                                f"evidence file {rel!r} must be a path inside the project")
+                        elif not exists(rel):
+                            row["problems"].append(f"evidence file {rel} does not exist")
+                elif state == "n/a":
+                    row["state"] = "n/a"
+                    if not _launch_text_ok(item.get("reason")):
+                        row["problems"].append(
+                            f"\"reason\" must say why it does not apply (at least "
+                            f"{LAUNCH_MIN_TEXT} characters, not a placeholder)")
+                    if iid == "public-key-data-access":
+                        hits = [s for s in _LAUNCH_DATA_SIGNALS if exists(s)]
+                        if hits:
+                            ev["advisories"].append(
+                                f"public-key-data-access is N/A, but this tree has "
+                                f"{', '.join(hits)}: check that no table or bucket is "
+                                f"reachable with the public key")
+            if row["problems"]:
+                row["state"] = "invalid"
+                ev["invalid"].append(iid)
+            elif row["state"] == "open":
+                ev["open"].append(iid)
+            ev["items"].append(row)
+    if ev["launched"] and placeholders:
+        ev["errors"].append(
+            f"the record says launched, but core/policy/policy.yaml rule(s) "
+            f"{', '.join(placeholders)} still point at {POLICY_PLACEHOLDER}, so the ship "
+            f"gate reviews none of the app code")
+    # Fail closed once launched, and when the status itself cannot be read
+    # (the record may say launched). While preparing it is advisory.
+    ev["blocking"] = (ev["launched"] or ev["status"] is None) and bool(
+        ev["errors"] or ev["open"] or ev["invalid"])
+    return ev
+
+
+def _launch_worktree_text(root: Path):
+    """The record's text from the working tree; None when there is none. A
+    symlink, a folder or an over-large file is returned as text that fails to
+    parse, so it is judged (and blocks) rather than ignored."""
+    p = root / LAUNCH_FILE
+    if not os.path.lexists(p):
+        return None
+    if p.is_symlink() or not p.is_file():
+        return "<not a regular file>"
+    try:
+        data = p.read_bytes()
+    except OSError as e:
+        return f"<unreadable: {e.strerror}>"
+    if len(data) > LAUNCH_MAX_BYTES:
+        return "<larger than 256 KB>"
+    return data.decode("utf-8", errors="replace")
+
+
+def _launch_worktree_exists(root: Path):
+    real_root = os.path.realpath(str(root))
+
+    def exists(rel: str) -> bool:
+        p = os.path.realpath(os.path.join(real_root, rel))
+        return (p == real_root or p.startswith(real_root + os.sep)) and os.path.exists(p)
+    return exists
+
+
+def _launch_ref_exists(root: Path, ref: str):
+    def exists(rel: str) -> bool:
+        r = subprocess.run(["git", "-C", str(root), "cat-file", "-e", f"{ref}:{rel}"],
+                           capture_output=True, text=True)
+        return r.returncode == 0
+    return exists
+
+
+def _launch_ref_text(root: Path, ref: str):
+    """The record's text at a pushed commit (None when that commit has none).
+    Anything else that is not a plain readable file there (a symlink, a
+    folder, an oversized blob, a git error) comes back as text that fails to
+    parse, so it is judged and blocks rather than being skipped."""
+    r = subprocess.run(["git", "-C", str(root), "ls-tree", "-l", "--full-tree", ref, "--", LAUNCH_FILE],
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        return "<unreadable: git ls-tree failed>"
+    line = r.stdout.strip()
+    if not line:
+        return None
+    meta, _tab, name = line.partition("\t")
+    parts = meta.split()
+    if name != LAUNCH_FILE or len(parts) != 4:
+        return "<unreadable: unexpected git ls-tree output>"
+    mode, kind, oid, size = parts
+    if kind != "blob" or mode not in ("100644", "100755"):
+        return "<not a regular file>"
+    if not size.isdigit() or int(size) > LAUNCH_MAX_BYTES:
+        return "<larger than 256 KB>"
+    b = subprocess.run(["git", "-C", str(root), "cat-file", "blob", oid], capture_output=True)
+    if b.returncode != 0:
+        return "<unreadable: git cat-file failed>"
+    return b.stdout.decode("utf-8", errors="replace")
+
+
+def _launch_ref_launched(root: Path, ref: str) -> bool:
+    """Whether the record at `ref` parses and says launched."""
+    text = _launch_ref_text(root, ref)
+    try:
+        doc = json.loads(text) if text is not None else None
+    except ValueError:
+        return False
+    return isinstance(doc, dict) and doc.get("status") == "launched"
+
+
+def _launch_policy_now(root: Path):
+    instance, errors = _gate_load_policy(root)
+    return None if errors else instance
+
+
+def _launch_evaluate_worktree(root: Path, policy_instance=None) -> dict:
+    if policy_instance is None:
+        policy_instance = _launch_policy_now(root)
+    return _launch_evaluate(_launch_worktree_text(root), _launch_worktree_exists(root),
+                            _launch_policy_placeholders(policy_instance))
+
+
+def _launch_gate_reasons(root: Path, policy_instance, head_shas, base_shas=None) -> list:
+    """Ship-gate reasons for launch records that say "launched" (or cannot be
+    read) with checks unanswered, at every pushed head (the working tree when
+    no head is given). A push that deletes a record the base commit had as
+    launched is refused too: a launched project steps back explicitly, by
+    setting the status to "preparing", never by losing the record."""
+    placeholders = _launch_policy_placeholders(policy_instance)
+    reasons = []
+    targets = [s for s in (head_shas or []) if s and set(str(s)) != {"0"}]
+    bases = [b for b in (base_shas or []) if b and set(str(b)) != {"0"} and b != EMPTY_TREE_SHA]
+    evs = []
+    if targets:
+        for sha in targets:
+            text = _launch_ref_text(root, sha)
+            if text is None and any(_launch_ref_launched(root, b) for b in bases):
+                reasons.append(f"LAUNCH_READINESS_INCOMPLETE: {LAUNCH_FILE} — the record said "
+                               f"launched and this push deletes it; set its status to "
+                               f"\"preparing\" instead")
+                continue
+            evs.append(_launch_evaluate(text, _launch_ref_exists(root, sha), placeholders))
+    else:
+        evs.append(_launch_evaluate(_launch_worktree_text(root),
+                                    _launch_worktree_exists(root), placeholders))
+    for ev in evs:
+        if ev["blocking"]:
+            detail = "; ".join(ev["errors"][:3]) or (
+                f"unanswered: {', '.join(ev['open'] + ev['invalid'])}")
+            msg = f"LAUNCH_READINESS_INCOMPLETE: {LAUNCH_FILE} — {detail}"
+            if msg not in reasons:
+                reasons.append(msg)
+    return reasons
+
+
+def _launch_print_report(ev: dict) -> None:
+    status = ev["status"] or "unreadable"
+    print(f"tessctl launch check — {LAUNCH_FILE} (status: {status})")
+    for msg in ev["errors"]:
+        print(f"  ERROR    {msg}")
+    marks = {"done": "done", "n/a": "N/A", "open": "OPEN", "invalid": "INVALID"}
+    for row in ev["items"]:
+        print(f"  {marks[row['state']]:<8} {row['id']:<24} {row['title']}  (checked by {row['owner']})")
+        for prob in row["problems"]:
+            print(f"           - {prob}")
+    for adv in ev["advisories"]:
+        print(f"  advisory {adv}")
+    if ev["placeholders"] and not ev["launched"]:
+        print(f"  advisory core/policy/policy.yaml rule(s) {', '.join(ev['placeholders'])} still "
+              f"point at {POLICY_PLACEHOLDER}: the ship gate reviews none of your app code "
+              f"(see {LAUNCH_DOC}). Marking the project launched requires real paths.")
+    left = ev["open"] + ev["invalid"]
+    if ev["blocking"]:
+        print(f"\nlaunch: FAIL — the record says launched (or cannot be read), but "
+              f"{len(left)} item(s) are unanswered" + (" and it has errors" if ev["errors"] else "")
+              + ". The ship gate refuses pushes until each item is answered with evidence or "
+              f"marked N/A with a reason. See {LAUNCH_DOC}.")
+    elif left or ev["errors"]:
+        print(f"\nlaunch: NOT READY — {len(left)} of {len(LAUNCH_ITEM_IDS)} item(s) unanswered"
+              + (f", {len(ev['errors'])} error(s)" if ev["errors"] else "") + ". "
+              f"The status is \"preparing\", so nothing is blocked yet. Answer each one before "
+              f"`tessctl launch mark-launched`.")
+    else:
+        print("\nlaunch: OK — every item is answered" + (" and the project is launched."
+                                                          if ev["launched"] else
+                                                          "; `tessctl launch mark-launched` records the launch."))
+
+
+def cmd_launch(args, root: Path) -> None:
+    """tessctl launch init | check | mark-launched (see LAUNCH READINESS above)."""
+    sub = getattr(args, "launch_sub", None)
+    path = root / LAUNCH_FILE
+    if sub == "init":
+        if os.path.lexists(path):
+            sys.exit(f"tessctl launch init: {LAUNCH_FILE} already exists; edit it, or run "
+                     f"`tessctl launch check`.")
+        _atomic_write_bytes(path, (json.dumps(_launch_template(), indent=2) + "\n").encode("utf-8"))
+        print(f"tessctl launch init: wrote {LAUNCH_FILE} with {len(LAUNCH_ITEM_IDS)} open items "
+              f"(status: preparing). Answer each one, then run `tessctl launch check`. "
+              f"See {LAUNCH_DOC}.")
+        return
+    ev = _launch_evaluate_worktree(root)
+    if sub == "check":
+        if not ev["present"]:
+            print(f"tessctl launch check: no {LAUNCH_FILE} here. Run `tessctl launch init` "
+                  f"before the first public launch. See {LAUNCH_DOC}.")
+            if ev["placeholders"]:
+                print(f"  advisory core/policy/policy.yaml rule(s) {', '.join(ev['placeholders'])} "
+                      f"still point at {POLICY_PLACEHOLDER}: the ship gate reviews none of "
+                      f"your app code.")
+            return
+        if getattr(args, "json_out", False):
+            print(json.dumps({k: ev[k] for k in ("status", "launched", "blocking", "errors",
+                                                 "open", "invalid", "advisories",
+                                                 "placeholders", "items")}, indent=2))
+        else:
+            _launch_print_report(ev)
+        sys.exit(1 if ev["blocking"] else 0)
+    if sub == "mark-launched":
+        if not ev["present"]:
+            sys.exit(f"tessctl launch mark-launched: no {LAUNCH_FILE}; run `tessctl launch init` "
+                     f"and answer every item first.")
+        if ev["errors"] or ev["open"] or ev["invalid"] or ev["placeholders"]:
+            _launch_print_report(dict(ev, launched=True, blocking=True))
+            print("tessctl launch mark-launched: REFUSED — nothing was changed.")
+            if ev["placeholders"] and not ev["errors"]:
+                print(f"  core/policy/policy.yaml rule(s) {', '.join(ev['placeholders'])} still "
+                      f"point at {POLICY_PLACEHOLDER}; set the real production paths first "
+                      f"(see {LAUNCH_DOC}).")
+            sys.exit(1)
+        if ev["launched"]:
+            print(f"tessctl launch mark-launched: {LAUNCH_FILE} already says launched.")
+            return
+        doc = json.loads(_launch_worktree_text(root))
+        doc["status"] = "launched"
+        _atomic_write_bytes(path, (json.dumps(doc, indent=2) + "\n").encode("utf-8"))
+        print(f"tessctl launch mark-launched: {LAUNCH_FILE} now says launched. Commit it with "
+              f"the release. From now on the ship gate refuses a push whose record has an "
+              f"unanswered item.")
+        return
+    sys.exit("tessctl launch: choose a subcommand — init | check | mark-launched")
+
+
+def _launch_doctor_findings(root: Path):
+    """(error lines, warning lines) for doctor: a launched record with
+    unanswered items is a failure; an open item while preparing, and a
+    production rule still on the placeholder, are warnings."""
+    policy_instance = _launch_policy_now(root)
+    ev = _launch_evaluate_worktree(root, policy_instance)
+    errors, warnings = [], []
+    if ev["blocking"]:
+        left = ev["open"] + ev["invalid"]
+        errors.append(
+            f"LAUNCH READINESS — {LAUNCH_FILE} says launched (or cannot be read) but "
+            + (f"{len(left)} item(s) are unanswered ({', '.join(left)})" if left else "it has errors")
+            + (f"; {ev['errors'][0]}" if ev["errors"] else "")
+            + ". Run `tessctl launch check`.")
+    elif ev["present"] and (ev["open"] or ev["invalid"] or ev["errors"]):
+        warnings.append(f"{LAUNCH_FILE}: {len(ev['open'] + ev['invalid'])} of "
+                        f"{len(LAUNCH_ITEM_IDS)} launch check(s) still unanswered"
+                        + (f", {len(ev['errors'])} error(s)" if ev["errors"] else "")
+                        + " (`tessctl launch check`)")
+    if ev["placeholders"] and not ev["blocking"]:
+        warnings.append(
+            f"core/policy/policy.yaml: rule {', '.join(ev['placeholders'])} still points at "
+            f"{POLICY_PLACEHOLDER}/..., so the ship gate reviews none of your app code. Put "
+            f"your production and client-facing paths in its globs (see {LAUNCH_DOC}).")
+    return errors, warnings
+
 
 
 # ── Codex hook trust (e2e round 2) ─────────────────────────────────────
@@ -16746,6 +17196,9 @@ _DECISION_MESSAGES = {
     "BASE_REQUIRED": "an immutable BASE commit is required",
     "ADMISSION_EVENT_SOURCE_REQUIRED": "an authoritative admission event source is required",
     "INTERNAL_ERROR_REDACTED": "an internal failure was redacted",
+    # 1.0.0: launch-readiness.json says launched (or cannot be read) while a
+    # launch check is unanswered (LAUNCH READINESS region).
+    "LAUNCH_READINESS_INCOMPLETE": "launch-readiness.json says launched but a launch check is unanswered",
     # PR-2 (Agent Receipt EMIT wiring) — NEVER a block reason (this code is
     # never present in `result["reasons"]`/`blocked`, only in the separate,
     # explicitly non-blocking `receipt_gaps` list — see
@@ -16784,6 +17237,8 @@ def _decision_reason_code(raw_reason: object) -> str:
         return "BASE_REQUIRED"
     if text.startswith("CONTRACT_INVALID:"):
         return "CONTRACT_INVALID"
+    if text.startswith("LAUNCH_READINESS_INCOMPLETE:"):
+        return "LAUNCH_READINESS_INCOMPLETE"
     if text.startswith("ADMISSION_EVENT_SOURCE_REQUIRED:"):
         return "ADMISSION_EVENT_SOURCE_REQUIRED"
     if text.startswith("[policy]") or lower.startswith("cannot load policy"):
@@ -21660,6 +22115,11 @@ def _gate_run_ship_check(
         # is ungated, so refuse outright rather than silently allow.
         return {"blocked": True, "reasons": reasons, "changed_paths": changed_paths}
 
+    # 1.0.0 (LAUNCH READINESS): a pushed head whose launch-readiness.json says
+    # launched (or cannot be read) while a launch check is unanswered, or
+    # while the production rule is still the placeholder, is refused.
+    reasons += [f"[gate] {r}" for r in _launch_gate_reasons(root, policy_instance, head_shas, base_shas)]
+
     # A3 FIX (policy self-tamper, Gate Arena finding): classify against the
     # UNION of what the NEW (just-pushed) policy requires and what the
     # BASELINE (pre-push, base-ref) policy ALREADY required — see this
@@ -21930,6 +22390,12 @@ def _gate_print_refusal(phase: str, result: dict, safe: dict, *, verbose: bool,
             print("To undo a change to one file: git restore --source=<the commit before your "
                   "change> -- <file>, then commit it and push again.")
         print(f"More help: {GATE_REFUSAL_DOC}")
+    elif any(str(r).startswith("[gate] LAUNCH_READINESS_INCOMPLETE:") for r in result.get("reasons") or []):
+        print(f"What this means: {LAUNCH_FILE} says this project is launched, but a launch "
+              f"check is unanswered (or the record cannot be read). Nothing was sent.")
+        print("What to do: run `./tessctl launch check`, answer each open item with evidence "
+              "or mark it N/A with a reason, commit that, and push again.")
+        print(f"More help: {LAUNCH_DOC}")
     else:
         print(f"More help: {GATE_REFUSAL_DOC}")
     counts: dict = {}
@@ -31464,6 +31930,21 @@ def build_parser() -> argparse.ArgumentParser:
                           help="list every file checked (default: problems plus a one-line summary)")
     p_doctor.add_argument("path", nargs="?", help="check a specific file")
 
+    # launch (1.0.0): the launch-readiness checklist
+    p_launch = sub.add_parser(
+        "launch", help="init | check | mark-launched: the checklist a project answers before "
+                       "it calls itself launched (spend limits, self-trigger guards, public-key "
+                       "data access, messaging consent, accessibility, security audit)")
+    launch_sub = p_launch.add_subparsers(dest="launch_sub")
+    launch_sub.add_parser("init", help=f"write {LAUNCH_FILE} with every item open")
+    p_launch_check = launch_sub.add_parser(
+        "check", help="list what is answered and what is open; exits 1 when the record says "
+                      "launched with an item unanswered")
+    p_launch_check.add_argument("--json", action="store_true", dest="json_out",
+                                help="machine-readable JSON output")
+    launch_sub.add_parser("mark-launched",
+                          help="set status to launched; refused while any item is unanswered")
+
     # update
     p_update = sub.add_parser("update", help="fetch new version; snapshot → doctor → signed-verify → merge → render → re-pin")
     p_update.add_argument("--check", action="store_true", help="report without writing (safe nightly version-watch)")
@@ -32543,6 +33024,7 @@ def main() -> None:
         "anchor":       cmd_anchor,
         "harden":       cmd_harden,
         "doctor":       cmd_doctor,
+        "launch":       cmd_launch,
         "update":       cmd_update,
         "self-update":  cmd_self_update,
         "publish":      cmd_publish,

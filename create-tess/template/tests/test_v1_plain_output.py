@@ -81,9 +81,13 @@ def test_doctor_default_is_one_plain_summary(instance):
     r = _tessctl(instance, "doctor")
     assert r.returncode == 0, r.stdout + r.stderr
     lines = [l for l in r.stdout.splitlines() if l.strip()]
-    assert re.fullmatch(r"All good — [\d,]+ files checked, nothing changed\.", lines[-2]), r.stdout
+    # 1.0.0 (phase 3): a fresh instance still has the shipped placeholder
+    # production rule, so doctor adds one warning line for it.
+    assert re.fullmatch(r"All good — [\d,]+ files checked, nothing changed\."
+                        r" 1 warning above: production paths or launch readiness\.", lines[-2]), r.stdout
     assert lines[-1] == "doctor: OK"
-    assert len(lines) <= 3, "default doctor output must be a short summary:\n" + r.stdout
+    assert any("__REPLACE_ME__" in l and l.startswith("  WARNING") for l in lines), r.stdout
+    assert len(lines) <= 4, "default doctor output must be a short summary:\n" + r.stdout
     assert "  ok  " not in r.stdout and "pristine:" not in r.stdout
 
 
