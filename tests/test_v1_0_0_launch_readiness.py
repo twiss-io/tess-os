@@ -128,6 +128,19 @@ def test_an_item_is_answered_only_with_evidence_or_a_reason(engine, item, bad):
     assert item in ev["invalid"] and ev["blocking"], ev
 
 
+def test_real_sentences_are_not_mistaken_for_placeholders(engine):
+    doc = _answered(engine, status="launched")
+    doc["items"]["accessibility"] = {"status": "done",
+                                     "evidence": "Done: axe scan on 12 pages, 0 violations; keyboard pass ok."}
+    doc["items"]["messaging-consent"] = {"status": "n/a",
+                                         "reason": "None of the features send SMS, email or calls."}
+    ev = _ev(engine, doc)
+    assert not ev["blocking"] and ev["invalid"] == [], ev
+    for short in ("yes", "done", "n/a", "ok", "none"):
+        doc["items"]["messaging-consent"] = {"status": "n/a", "reason": short}
+        assert "messaging-consent" in _ev(engine, doc)["invalid"], short
+
+
 def test_evidence_files_must_exist_in_the_same_tree(engine):
     doc = _answered(engine, status="launched")
     doc["items"]["spend-limits"]["evidence_files"] = ["netlify.toml"]

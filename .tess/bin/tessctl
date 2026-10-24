@@ -7472,7 +7472,9 @@ LAUNCH_ITEM_IDS = tuple(i[0] for i in LAUNCH_ITEMS)
 # public key can reach; an N/A for public-key-data-access then gets a note.
 _LAUNCH_DATA_SIGNALS = ("supabase", "firebase.json", "firestore.rules", "storage.rules",
                         "database.rules.json")
-_LAUNCH_PLACEHOLDER_TEXT = re.compile(r"(?i)^\s*(todo|tbd|tba|fixme|n/?a|none|done|yes|ok)\b")
+# Text that says the work is still to do. Short answers ("yes", "done", "n/a")
+# fail the length rule; a real sentence that starts "Done:" or "None of" passes.
+_LAUNCH_PLACEHOLDER_TEXT = re.compile(r"(?i)^\s*(todo|tbd|tba|fixme|xxx)\b")
 
 
 def _launch_template() -> dict:
