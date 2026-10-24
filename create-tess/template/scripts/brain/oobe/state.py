@@ -19,7 +19,6 @@ SCHEMA = 1
 TOTAL_STEPS = 7
 BRAIN_JSON = "brain/brain.json"
 STATE_DIR = ".tess/state/brain"
-STATUSES = ("pending", "in_progress", "complete", "deferred", "skipped")
 JOURNAL_POLICIES = ("commit-redacted", "stub-only", "local", "off")
 FRAMEWORK_REMOTE_PATTERNS = ["github.com[:/]twiss-io/tess-os"]
 BUDGETS = {
@@ -258,4 +257,3 @@ def status_line(st: Dict[str, Any]) -> str:
                      % (st["last_apply_error"], st.get("fix", APPLY_AGAIN)))
         return line
     return s
-

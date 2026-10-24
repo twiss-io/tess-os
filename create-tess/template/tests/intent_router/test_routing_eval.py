@@ -89,11 +89,10 @@ def test_routing_eval_never_leaves_a_case_unrouted(example_routing_table):
 @pytest.mark.parametrize("case", _load_cases(), ids=lambda c: c["input"][:40])
 def test_each_case_individually(case, example_routing_table):
     """Same eval, one case per test id, so a CI failure names the exact
-    input that mis-routed instead of only the aggregate percentage."""
+    input that mis-routed instead of only the aggregate percentage. Strict:
+    every case routes correctly today, so a mis-route is a regression (the
+    aggregate >=90% test stays the policy floor for new, harder cases)."""
     decision = route(case["input"], example_routing_table, force=True)
-    if decision.route_id not in case["expected_route_ids"]:
-        pytest.xfail(
-            f"expected one of {case['expected_route_ids']}, got {decision.route_id!r} "
-            "(aggregate accuracy is separately enforced at >=90% by "
-            "test_routing_eval_meets_or_exceeds_90_percent_accuracy)"
-        )
+    assert decision.route_id in case["expected_route_ids"], (
+        f"expected one of {case['expected_route_ids']}, got {decision.route_id!r}"
+    )

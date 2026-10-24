@@ -661,13 +661,20 @@ def test_lint_task_empty_note_text_flagged(engine):
     assert any("empty note text" in v for v in violations)
 
 
+def test_task_schema_accepts_the_valid_instance(engine):
+    """Positive control for the single-mutation schema tests below."""
+    schema = engine.load_contract_schema(REPO_ROOT, "task")
+    base_dir = REPO_ROOT / "core" / "contracts"
+    assert engine.schema_validate(_valid_task_instance(), schema, schema, base_dir) == []
+
+
 def test_task_schema_rejects_missing_required_field(engine):
     schema = engine.load_contract_schema(REPO_ROOT, "task")
     inst = _valid_task_instance()
     del inst["claim"]
     base_dir = REPO_ROOT / "core" / "contracts"
     violations = engine.schema_validate(inst, schema, schema, base_dir)
-    assert violations
+    assert any(v.startswith("$: missing required property 'claim'") for v in violations), violations
 
 
 def test_task_schema_rejects_bad_id_pattern(engine):
@@ -676,4 +683,4 @@ def test_task_schema_rejects_bad_id_pattern(engine):
     inst["id"] = "not-a-valid-id"
     base_dir = REPO_ROOT / "core" / "contracts"
     violations = engine.schema_validate(inst, schema, schema, base_dir)
-    assert violations
+    assert any(v.startswith("$.id: 'not-a-valid-id' does not match pattern") for v in violations), violations

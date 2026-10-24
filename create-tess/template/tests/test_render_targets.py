@@ -266,7 +266,7 @@ def test_determinism_across_independent_projects(tmp_path, engine):
 
     assert claude_a == claude_b, "identical core produced different CLAUDE.md across independent roots"
     assert settings_a == settings_b, "identical core produced different settings.json across independent roots"
-    assert engine.sha256_str(claude_a) == engine.sha256_str(claude_b)
+    assert engine.sha256_bytes(claude_a.encode()) == engine.sha256_bytes(claude_b.encode())
 
 
 # ---------------------------------------------------------------------------
@@ -309,7 +309,7 @@ def test_render_ordering_is_target_agnostic_repeat_call(project):
     hashes = set()
     for _ in range(3):
         target.render(project.root, verbose=False)
-        hashes.add(project.mod.sha256_str(project.read_live("CLAUDE.md")))
+        hashes.add(project.mod.sha256_bytes(project.read_live("CLAUDE.md").encode()))
     assert len(hashes) == 1, "render() produced different CLAUDE.md bytes across repeat calls"
 
 

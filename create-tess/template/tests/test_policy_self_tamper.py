@@ -10,7 +10,7 @@ A3 — policy self-tamper (Gate Arena finding, disclosed 2026-07-07, PR #50 on
 
 Fix: `tessctl gate` now classifies changed paths against the UNION of what
 the NEW (just-pushed) policy requires and what the BASELINE (pre-push,
-base-ref) policy ALREADY required (`_gate_load_policy_at_base` +
+base-ref) policy ALREADY required (`_gate_load_policy_at_base_with_ref` +
 `_gate_union_baseline_matches` in `.tess/bin/tessctl`). A rule's
 requirement, once true at the base ref, cannot be made to silently stop
 applying to THIS push's own changes.

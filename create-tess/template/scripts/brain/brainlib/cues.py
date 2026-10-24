@@ -104,7 +104,3 @@ def mentions(text: str, name: str) -> bool:
     if len(name) < 3:
         return False
     return re.search(r"(?<![A-Za-z0-9])%s(?![A-Za-z0-9])" % re.escape(name), text or "", _I) is not None
-
-
-def has_currency(text: str) -> bool:
-    return bool(CURRENCY.search(text or ""))

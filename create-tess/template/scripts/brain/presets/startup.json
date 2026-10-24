@@ -6,6 +6,5 @@
   "templates": [
     {"template": "presets/startup", "dest": "brain"}
   ],
-  "seats": ["founder-ceo", "product", "growth", "operations"],
-  "suggest_squad": "founders"
+  "seats": ["founder-ceo", "product", "growth", "operations"]
 }

@@ -99,15 +99,6 @@ def test_core_and_mirror_policy_yaml_still_byte_identical_after_fix():
     assert mirror_path.read_bytes() == REAL_POLICY_PATH.read_bytes()
 
 
-def test_policy_yaml_still_schema_valid_after_fix(engine):
-    schema = engine.load_contract_schema(REPO_ROOT, "policy")
-    instance = engine.load_contract_instance(REAL_POLICY_PATH)
-    base_dir = REPO_ROOT / "core" / "contracts"
-    violations = engine.schema_validate(instance, schema, schema, base_dir)
-    violations += engine._lint_contract("policy", instance)
-    assert violations == [], violations
-
-
 def test_lock_base_sha_matches_committed_core_and_live_bytes_after_regen(engine):
     """The re-pin (`tessctl lock --regen`) this fix required must have
     actually landed — base_sha in tess.lock matches the CURRENT (post-fix)

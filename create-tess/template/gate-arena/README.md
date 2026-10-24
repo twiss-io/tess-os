@@ -33,7 +33,7 @@ ran 8/10 at first pass, with two real, disclosed gaps — both since closed:
 
 | # | Finding | Status |
 |---|---|---|
-| A3 | A policy-tamper that DELETES policy.yaml's own self-gating rule, committed in the SAME push as the unreviewed payload. Fixed: `tessctl gate` now classifies against the UNION of what the newly-pushed policy requires and what the pre-push BASELINE policy already required (`_gate_load_policy_at_base` + `_gate_union_baseline_matches`) — a requirement true at the baseline cannot be silently switched off by the same push that needed it. | **CLOSED** |
+| A3 | A policy-tamper that DELETES policy.yaml's own self-gating rule, committed in the SAME push as the unreviewed payload. Fixed: `tessctl gate` now classifies against the UNION of what the newly-pushed policy requires and what the pre-push BASELINE policy already required (`_gate_load_policy_at_base_with_ref` + `_gate_union_baseline_matches`) — a requirement true at the baseline cannot be silently switched off by the same push that needed it. | **CLOSED** |
 | A10c | The signature check did not inspect GPG key expiry/revocation status — only cryptographic validity and exact fingerprint match. Fixed: `_gpg_signing_key_validity_reason` scans gpg's own EXPKEYSIG/REVKEYSIG status classification at verification time; either is now rejected fail-closed. | **CLOSED** |
 
 The honesty capstone audit (2026-07-08) found two FURTHER, NEW bypass

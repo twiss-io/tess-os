@@ -70,7 +70,3 @@ def fill(text: str, block: str, content: str, heading: str = "") -> str:
 def strip_blocks(text: str) -> str:
     """Hand-written text only (generated blocks removed) - for cap diagnostics."""
     return re.sub(r"<!-- tess:gen:([a-z-]+):start -->.*?<!-- tess:gen:\1:end -->", "", text, flags=re.S)
-
-
-def links_in(text: str) -> List[str]:
-    return re.findall(r"\]\(([^)\s#]+)(?:#[^)\s]*)?\)", text)

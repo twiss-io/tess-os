@@ -171,11 +171,6 @@ def seal_state(cfg: Config, rec: Record, seals: Optional[Dict[str, Dict]] = None
     return True, trusted
 
 
-def is_sealed(cfg: Config, rec: Record, seals: Optional[Dict[str, Dict]] = None) -> bool:
-    """The record's file is exactly what this tool last wrote for its id, at this path (seal_state)."""
-    return seal_state(cfg, rec, seals)[0]
-
-
 def seal(cfg: Config, path: Path, text: str, meta: Optional[Dict] = None, sandbox: bool = False) -> bool:
     """Record in the external ledger that this tool wrote `text` at `path` (see the module docstring).
     The id, status and confirmed flag come from `text` itself, never from `meta` (GPT-6 round 6, item 10:

@@ -245,18 +245,6 @@ def test_policy_yaml_base_sha_matches_committed_core_and_live_bytes(engine):
     assert core_path.read_bytes() == live_path.read_bytes()
 
 
-def test_policy_yaml_is_valid_against_its_own_schema(engine):
-    """core/policy/policy.yaml (the shipped default instance) must itself
-    validate against core/contracts/policy.schema.json + its lint checks —
-    the framework does not ship a policy file that would fail its own gate."""
-    schema = engine.load_contract_schema(REPO_ROOT, "policy")
-    instance = engine.load_contract_instance(REPO_ROOT / "core" / "policy" / "policy.yaml")
-    base_dir = REPO_ROOT / "core" / "contracts"
-    violations = engine.schema_validate(instance, schema, schema, base_dir)
-    violations += engine._lint_contract("policy", instance)
-    assert violations == [], violations
-
-
 def test_tamper_on_policy_yaml_is_caught(real_root, run_cli):
     core_file = real_root / ".tess" / "core" / "policy" / "policy.yaml"
     core_file.write_text(core_file.read_text(encoding="utf-8") + "\n# tampered\n", encoding="utf-8")

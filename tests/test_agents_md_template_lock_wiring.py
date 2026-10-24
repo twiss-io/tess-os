@@ -256,4 +256,3 @@ def test_lock_check_now_catches_core_internal_tamper(project, run_cli):
     assert d.returncode == 1
     v = run_cli(project.root, "verify")
     assert v.returncode == 1
-

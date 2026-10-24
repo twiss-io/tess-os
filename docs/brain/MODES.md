@@ -34,8 +34,8 @@ personal operator layer (profile, decisions, loops, journal) is always on.
 
 | Preset | Base mode | Adds |
 |---|---|---|
-| `startup` | organisation | 1-10 people: seats `founder-ceo`, `product`, `growth`, `operations`; this quarter's priorities page; a 5-row scorecard; an investors pointer page; suggests the `founders` squad |
-| `solo-consultant` | agency | a team of one: `agency/proposals/`, a pipeline page and a rate card in `pricing.md`; suggests the `operators` squad |
+| `startup` | organisation | 1-10 people: seats `founder-ceo`, `product`, `growth`, `operations`; this quarter's priorities page; a 5-row scorecard; an investors pointer page |
+| `solo-consultant` | agency | a team of one: `agency/proposals/`, a pipeline page and a rate card in `pricing.md` |
 
 ### Later
 

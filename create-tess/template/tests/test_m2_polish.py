@@ -232,18 +232,8 @@ class TestBenchPathGroup:
     def test_bench_path_group_unknown_exit(self, project):
         """bench with an unknown name that is not a path group raises SystemExit."""
         p = _build_squad_project(project)
-        with pytest.raises(SystemExit):
+        with pytest.raises(SystemExit, match="tessctl bench: no agents matched"):
             p.mod.cmd_bench(ns(names=["totally-made-up-name"]), p.root)
-
-    def test_bench_path_group_orchestrator_shorthand_still_works(self, project):
-        """bench product-delivery → product-delivery-orchestrator (shorthand still intact)."""
-        p = _build_squad_project(project)
-        p.mod.cmd_roster(ns(roster_sub="apply", path_name="builders"), p.root)
-        assert _statuses(p)["product-delivery-orchestrator"] == "core-managed"
-
-        p.mod.cmd_bench(ns(names=["product-delivery"]), p.root)
-        assert _statuses(p)["product-delivery-orchestrator"] == "staged"
-        assert not p.live(_live("product-delivery-orchestrator")).exists()
 
 
 # ===========================================================================

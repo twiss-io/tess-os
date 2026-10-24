@@ -17,8 +17,8 @@ bypass classes the original 10-attack corpus never tested. Both are now
 closed and re-measured together:
 
 - **A3** (policy self-tamper) and **A10c** (expired-key signatures) — the
-  two ORIGINAL gaps below — are **CLOSED**: `_gate_load_policy_at_base` +
-  `_gate_union_baseline_matches` (A3, baseline-union classification, never
+  two ORIGINAL gaps below — are **CLOSED**: `_gate_load_policy_at_base_with_ref`
+  + `_gate_union_baseline_matches` (A3, baseline-union classification, never
   narrower than the pre-push policy) and `_gpg_signing_key_validity_reason`
   (A10c, rejects gpg's own EXPKEYSIG/REVKEYSIG classification at
   verification time).

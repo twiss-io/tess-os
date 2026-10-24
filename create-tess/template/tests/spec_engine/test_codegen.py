@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 import _spec_engine_paths  # noqa: F401 -- sys.path bootstrap
 
 from spec_engine.gate_approval import sign_local_approval
@@ -255,22 +257,16 @@ def test_codegen_manifest_json_validates_against_schema(tmp_path):
 
 def test_generate_app_rejects_unsupported_target_stack(tmp_path):
     spec = _spec("The data model needs a Widget entity (name, price).")
-    try:
+    with pytest.raises(SpecEngineError, match="target_stack"):
         generate_app(spec, tmp_path, target_stack="rails-postgres")
-        assert False, "expected SpecEngineError"
-    except SpecEngineError as e:
-        assert "target_stack" in str(e)
 
 
 def test_generate_app_rejects_scaffold_plan_from_a_different_spec(tmp_path):
     spec_a = _spec("The data model needs a Widget entity (name, price).")
     spec_b = _spec("The data model needs a Gadget entity (label).")
     plan_for_b = plan_scaffold_from_spec(spec_b)
-    try:
+    with pytest.raises(SpecEngineError, match="does not match spec"):
         generate_app(spec_a, tmp_path, scaffold_plan=plan_for_b)
-        assert False, "expected SpecEngineError"
-    except SpecEngineError as e:
-        assert "does not match spec" in str(e)
 
 
 def test_generate_app_default_target_stack_is_supported():

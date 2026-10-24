@@ -14,7 +14,6 @@ from typing import Any, Dict, List, Optional
 
 from . import state
 
-MODES = ("personal", "agency", "organisation")
 PRESETS = {"startup": "organisation", "solo-consultant": "agency"}
 MODE_ALIASES = {
     "a": "personal", "me": "personal", "just me": "personal", "personal": "personal",
@@ -23,7 +22,6 @@ MODE_ALIASES = {
     "organization": "organisation", "company": "organisation",
 }
 DEFAULT_AREAS = ["work", "home", "relationships", "learning", "health", "money"]
-PRIVATE_AREAS = ("health", "money")
 
 QUESTIONS = {
     1: "Who is this brain for? (a) just me: personal, (b) my firm, serving outside clients: agency, "

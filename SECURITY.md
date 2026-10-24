@@ -917,9 +917,9 @@ security reviews; they are stated so nobody relies on a check that is not there.
   the command yourself; switch back to default mode to be asked. The `tessctl`
   steps that record Tess's safety files as approved or change their recorded
   state (`update`, `self-update`, `approve`, `anchor`, `override`, `reset`,
-  `resolve`, `rollback`, `restore --force`, `publish --force`, `capture --auto`,
-  `lock --regen`, `recruit`, `bench`, `roster apply`), signing a verdict or a
-  sign-off (`verdict sign`, `gate signoff sign`), and approving your own push
+  `resolve`, `rollback`, `restore --force`, `publish --force`, `lock --regen`,
+  `recruit`, `bench`, `roster apply`), signing a verdict or a sign-off
+  (`verdict sign`, `gate signoff sign`), and approving your own push
   (`gate approve`), are the operator's: the gate
   refuses an agent that feeds them input or fakes a terminal for them (and, in
   Codex, refuses them outright; see the Codex item above).

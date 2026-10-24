@@ -73,7 +73,7 @@ CHAIN_REL = Path(".tess") / "state" / "receipts" / "chain.jsonl"
 # Fixture: gate_repo + a real, committed tools/receipt-emit/ + tools/
 # receipt-verify/ copy — the exact shape an adopter project actually has
 # (create-tess's whole-tree-minus-exclusions scaffold ships both dirs; see
-# GATE_RECEIPT_CHAIN_REL / RECEIPT_EMIT_CLI_REL's own module comment in
+# GATE_RECEIPT_CHAIN_REL / RECEIPT_TOOL_TRUST_CLOSURE's own module comment in
 # .tess/bin/tessctl for why resolution is against the OPERATING root).
 # ---------------------------------------------------------------------------
 

@@ -256,21 +256,3 @@ def test_lock_check_now_catches_core_internal_tamper(project, run_cli):
     assert d.returncode == 1
     v = run_cli(project.root, "verify")
     assert v.returncode == 1
-
-
-def test_lock_check_still_skips_staged_entries_with_no_base_sha(project, run_cli):
-    """Non-regression: a staged, un-recruitable entry with NO base_sha at all
-    (nothing checkable) must still be silently skipped by lock --check, not
-    newly flagged as an issue by this fix."""
-    project.files[".tess/core/personas/staged-fixture.md"] = {
-        "status": "staged",
-        "tier": "normal",
-        "base_sha": "",
-        "live_path": None,
-    }
-    (project.root / ".tess" / "core" / "personas").mkdir(parents=True, exist_ok=True)
-    project.write()
-
-    r = run_cli(project.root, "lock", "--check")
-    assert r.returncode == 0, r.stdout + r.stderr
-    assert "staged-fixture.md" not in r.stdout

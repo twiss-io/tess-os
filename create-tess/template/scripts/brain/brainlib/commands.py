@@ -7,7 +7,6 @@ from typing import Dict, List, Tuple
 
 from . import (claims, confirm, githooks, hooks, inbox, index, lint, promote, recall, records, save, status, sync, verify)
 from .config import Config, iso
-from .parsers import count_lines
 
 _run_candidate = claims.run_candidate
 
@@ -302,8 +301,3 @@ def cmd_githooks(cfg: Config, a) -> Out:
 
 def cmd_distilled(cfg: Config, a) -> Out:
     return 0, hooks.mark_distilled(cfg)
-
-
-def cmd_errors(cfg: Config, a) -> Out:
-    return 0, {"errors": count_lines(cfg.state / "errors.log")}
-

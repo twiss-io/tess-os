@@ -6,6 +6,5 @@
   "templates": [
     {"template": "presets/solo-consultant", "dest": "brain"}
   ],
-  "seats": [],
-  "suggest_squad": "operators"
+  "seats": []
 }

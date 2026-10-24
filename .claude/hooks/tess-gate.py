@@ -241,7 +241,6 @@ REDIRECTS = {">", ">>", ">|", "&>", "&>>", "<>",
              ">!", ">>!", ">>|", "&>!", "&>|", "&>>!", "&>>|", ">&!", ">&|"}
 GIT_VALUE_OPTS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace",
                   "--exec-path", "--config-env", "--super-prefix", "--list-cmds"}
-PUSH_VALUE_OPTS = {"-o", "--push-option", "--repo", "--receive-pack", "--exec"}
 ZERO = "0" * 40
 # v1.0 final review (Cyra H3): Codex's patch parser trims each line before it
 # matches a file header, so `  *** Delete File: x` and TAB`*** Add File: x`
@@ -2728,10 +2727,6 @@ def _env_config(env: dict) -> list:
         count = 0
     return [f"{env[f'GIT_CONFIG_KEY_{k}']}={env.get(f'GIT_CONFIG_VALUE_{k}', '')}"
             for k in range(min(count, 64)) if f"GIT_CONFIG_KEY_{k}" in env]
-
-
-_HISTORY_ADVICE = ("git replace refs, sparse checkouts and fetching into the checked-out branch "
-                   "change which files git writes without naming them")
 
 
 def _has_replace_refs(cwd: str) -> bool | None:

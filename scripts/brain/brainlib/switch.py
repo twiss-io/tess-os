@@ -32,7 +32,6 @@ AFFIRM = re.compile(
     r"|^\s*(?:(?:yes|yeah|yep|ok(?:ay)?|sure|fine|alright|agreed|sounds good)\b[\s,.!-]*)*"
     r"(?:let'?s |we'?ll |please )?(?:do|go with|go for|use|take|pick|switch to|make) (?:that|it|this|those|them)\b"
     r"|^\s*(?:yes|yeah|yep|ok(?:ay)?|sure)?[\s,.!-]*go ahead\b")
-REASON = "V12: a later choice or switch in the same session (%r); the operator confirms which one stands"
 
 
 def _question(s: str) -> bool:

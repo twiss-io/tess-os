@@ -121,7 +121,6 @@ class Config:
             listed = [p for p in self.principals if p.get("git_emails")]
             hit = [p for p in listed if email and email.lower() in [str(e).lower() for e in p["git_emails"]]]
             self._local_speaker = (str(hit[0]["slug"]) if hit else None) if listed else self.operator_slug
-            self.git_email = email
         return self._local_speaker
 
     def resolve_speaker(self, raw: str) -> Optional[str]:

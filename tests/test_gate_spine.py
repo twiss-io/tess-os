@@ -750,8 +750,8 @@ def test_pre_push_stdin_protocol_blocks(gate_repo, run_cli):
 def test_pre_push_stdin_protocol_allows_with_covering_verdict(gate_repo, run_cli, engine, verifier_gpg_keys):
     """The stdin-protocol path threads `head_shas` through to the covering-
     verdict check exactly like explicit --base/--head does — proven
-    independently since _gate_changed_paths_from_stdin's return shape
-    changed (HIGH-1(c)) to also surface the pushed head sha(s)."""
+    independently since the stdin reader's return shape changed
+    (HIGH-1(c)) to also surface the pushed head sha(s)."""
     base = _base_sha(gate_repo)
     (gate_repo / "src" / "prod").mkdir(parents=True)
     (gate_repo / "src" / "prod" / "app.py").write_text("print('prod')\n")

@@ -500,13 +500,20 @@ def test_lint_ledger_event_task_scoped_without_ref_flagged(engine):
     assert any("task-scoped" in v for v in violations)
 
 
+def test_ledger_event_schema_accepts_the_valid_event(engine):
+    """Positive control for the single-mutation schema tests below."""
+    schema = engine.load_contract_schema(REPO_ROOT, "ledger-event")
+    base_dir = REPO_ROOT / "core" / "contracts"
+    assert engine.schema_validate(_valid_ledger_event(), schema, schema, base_dir) == []
+
+
 def test_ledger_event_schema_rejects_bad_hash_pattern(engine):
     schema = engine.load_contract_schema(REPO_ROOT, "ledger-event")
     inst = _valid_ledger_event()
     inst["hash"] = "not-hex"
     base_dir = REPO_ROOT / "core" / "contracts"
     violations = engine.schema_validate(inst, schema, schema, base_dir)
-    assert violations
+    assert any(v.startswith("$.hash: 'not-hex' does not match pattern") for v in violations), violations
 
 
 def test_ledger_event_schema_rejects_bad_event_enum(engine):
@@ -515,7 +522,7 @@ def test_ledger_event_schema_rejects_bad_event_enum(engine):
     inst["event"] = "not-a-real-event"
     base_dir = REPO_ROOT / "core" / "contracts"
     violations = engine.schema_validate(inst, schema, schema, base_dir)
-    assert violations
+    assert any(v.startswith("$.event: 'not-a-real-event' is not one of") for v in violations), violations
 
 
 def test_ledger_event_schema_requires_seq(engine):
@@ -524,7 +531,7 @@ def test_ledger_event_schema_requires_seq(engine):
     del inst["seq"]
     base_dir = REPO_ROOT / "core" / "contracts"
     violations = engine.schema_validate(inst, schema, schema, base_dir)
-    assert violations
+    assert any(v.startswith("$: missing required property 'seq'") for v in violations), violations
 
 
 def test_ledger_event_schema_rejects_negative_seq(engine):
@@ -533,7 +540,7 @@ def test_ledger_event_schema_rejects_negative_seq(engine):
     inst["seq"] = -1
     base_dir = REPO_ROOT / "core" / "contracts"
     violations = engine.schema_validate(inst, schema, schema, base_dir)
-    assert violations
+    assert any(v.startswith('$.seq: -1 < minimum 0') for v in violations), violations
 
 
 def test_ledger_event_hash_function_is_deterministic_and_prev_hash_sensitive(engine):

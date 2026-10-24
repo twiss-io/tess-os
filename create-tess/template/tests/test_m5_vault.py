@@ -129,7 +129,7 @@ def test_parse_ref_valid(engine, ref, expected):
     "svc/k$y",           # invalid char
 ])
 def test_parse_ref_invalid_exits(engine, ref):
-    with pytest.raises(SystemExit):
+    with pytest.raises(SystemExit, match=r"tessctl vault: (invalid ref|ref component) "):
         engine._vault_parse_ref(ref)
 
 

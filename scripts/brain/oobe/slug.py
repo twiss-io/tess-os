@@ -2,10 +2,8 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import re
 import unicodedata
-from typing import Any
 
 _NON_SLUG = re.compile(r"[^a-z0-9]+")
 
@@ -45,16 +43,6 @@ def name_key(name: str) -> str:
 def cell(text: str) -> str:
     """Make a value safe inside one Markdown table cell."""
     return str(text).replace("\\", "\\\\").replace("|", "\\|")
-
-
-def yq(value: Any) -> str:
-    """Render a value as a YAML flow scalar/sequence.
-
-    JSON is a subset of YAML 1.2 flow syntax, so a JSON-encoded string or
-    list is always a valid, correctly escaped YAML value. Used for every
-    user-supplied value written into front matter.
-    """
-    return json.dumps(value, ensure_ascii=False)
 
 
 def one_line(text: str, limit: int = 300) -> str:

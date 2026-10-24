@@ -195,7 +195,7 @@ def test_genesis_requires_literal_genesis_hash(engine, schema):
 def test_non_genesis_requires_sha256_hex_hash(engine, schema):
     receipt = _base_receipt("verdict", _base_verdict(), sequence=1, prev_hash="GENESIS")
     errors = engine.schema_validate(receipt, schema, schema, CONTRACTS_DIR)
-    assert errors, "sequence:1 with prev_receipt_hash 'GENESIS' should fail the pattern check"
+    assert any(e.startswith("$.chain.prev_receipt_hash: 'GENESIS' does not match pattern") for e in errors), "sequence:1 with prev_receipt_hash 'GENESIS' should fail the pattern check"
 
 
 def test_unexpected_top_level_field_rejected(engine, schema):
@@ -271,7 +271,7 @@ def test_local_approval_decision_cannot_satisfy_verdict_shaped_decision_ref(engi
     decision cannot be smuggled in under decision_kind: verdict."""
     receipt = _base_receipt("verdict", _base_local_approval())
     errors = engine.schema_validate(receipt, schema, schema, CONTRACTS_DIR)
-    assert errors, "an Approval-shaped decision must fail verdict.schema.json"
+    assert any(e.startswith("$.decision: missing required property 'verifier'") for e in errors), "an Approval-shaped decision must fail verdict.schema.json"
 
 
 def test_local_approval_receipt_signature_algorithm_must_be_hmac(engine, schema):

@@ -2,8 +2,9 @@
 month under .tess/state/brain/receipts/ (local state, never committed).
 
 Each line carries sha256(prev_sha256 + canonical JSON of the entry), so an
-edited or deleted line breaks the chain (`verify_chain`). Failures to write
-a receipt are logged and never block learning.
+edited or deleted line breaks the chain. Nothing in Tess OS re-checks the
+chain today; it is a local audit trail, not an enforced control. Failures to
+write a receipt are logged and never block learning.
 """
 from __future__ import annotations
 
@@ -53,22 +54,3 @@ def append(cfg: Config, principal: str, action: str, subject: str, status: str, 
             fh.write(json.dumps(entry, sort_keys=True, ensure_ascii=False) + "\n")
     except OSError as exc:
         log_error(cfg, "receipts: append failed", exc)
-
-
-def verify_chain(path: Path) -> List[str]:
-    """-> list of problems (empty == intact)."""
-    problems, prev = [], GENESIS
-    with open(path, encoding="utf-8") as fh:
-        for n, line in enumerate(fh, 1):
-            try:
-                entry = json.loads(line)
-            except ValueError:
-                problems.append("line %d: not JSON" % n)
-                continue
-            if entry.get("prev_sha256") != prev:
-                problems.append("line %d: chain break" % n)
-            want = _digest(entry.get("prev_sha256", ""), {k: v for k, v in entry.items() if k != "sha256"})
-            if entry.get("sha256") != want:
-                problems.append("line %d: digest mismatch" % n)
-            prev = entry.get("sha256") or prev
-    return problems

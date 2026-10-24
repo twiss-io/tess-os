@@ -81,7 +81,7 @@ def test_capture_nonnormal_tier_requires_rationale(project):
     project.add("conductor/doc.md", "DOC\n", tier="doctrine")
     project.write()
     project.write_live("conductor/doc.md", "DOC edited\n")
-    with pytest.raises(SystemExit):
+    with pytest.raises(SystemExit, match=r"non-normal tier \(doctrine\) — --rationale is required"):
         project.mod.cmd_capture(
             ns(path="conductor/doc.md", all=False, dry_run=False,
                rationale="", source="agent"),

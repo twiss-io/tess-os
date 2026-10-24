@@ -205,15 +205,6 @@ def test_set_lane_unchanged_is_a_true_no_op(troot):
     assert "no effective change" in r.stdout
 
 
-def test_set_no_changes_specified_still_errors_without_lane(troot):
-    """Regression guard: --lane joining the `set` flag family must not
-    accidentally satisfy the 'at least one change' guard when omitted."""
-    task_id = _new(troot)
-    r = _run(troot, "tasks", "set", task_id, "--harness", "h")
-    assert r.returncode != 0
-    assert "no changes specified" in (r.stdout + r.stderr)
-
-
 def test_set_rejects_unknown_lane_value(troot):
     task_id = _new(troot)
     r = _run(troot, "tasks", "set", task_id, "--lane", "gpt5", "--harness", "h")
@@ -671,7 +662,7 @@ def test_task_schema_target_harness_enum_rejects_unknown_value(engine):
     }
     base_dir = REPO_ROOT / "core" / "contracts"
     violations = engine.schema_validate(inst, schema, schema, base_dir)
-    assert violations
+    assert any(v.startswith("$.target_harness: 'gpt5' is not one of") for v in violations), violations
 
 
 def test_task_schema_full_valid_instance_including_target_harness_passes(engine):

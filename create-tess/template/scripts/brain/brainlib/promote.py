@@ -14,7 +14,7 @@ from typing import Dict, List
 
 from . import lookup, records, verify
 from .config import Config, iso
-from .textutil import clip, contains, slugify
+from .textutil import clip, slugify
 
 
 def default_target(kind: str, entity: str) -> str:
@@ -286,7 +286,3 @@ def change_status(cfg: Config, rid: str, action: str, quote: str, line: lookup.J
     new = promote(cfg, cand, pending=line.kind == "turn")
     records.update_fields(records.find(cfg, rid), {"status": "retracted", "superseded_by": new.id})
     return {"ok": True, "record": rid, "status": "retracted", "by": new.id}
-
-
-def quote_in(line_text: str, quote: str) -> bool:
-    return contains(line_text, quote)
