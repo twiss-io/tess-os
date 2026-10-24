@@ -126,7 +126,7 @@ def first_push(tmp_path_factory, request):
     _run(["node", str(pack / "package" / "bin" / "create-tess.mjs"), str(inst), "--yes",
           "--operator=Alex", "--mode", "personal"], tmp, env=env)
     return {"inst": inst, "tmp": tmp, "tag": tag, "attacker": attacker, "env": env,
-            "seed": _git(inst, "rev-parse", "HEAD")}
+            "seed": _git(inst, "rev-parse", "HEAD"), "pack": pack}
 
 
 def _nogpg(tmp: Path, name: str) -> str:
@@ -209,6 +209,50 @@ def test_a_policy_that_differs_from_the_reset_release_policy_is_refused(first_pu
                 "      public_key_file: .tess/keys/verifiers/mallory.asc", 1))
     rc, out = _gate(first_push["inst"], _commit_on_seed(first_push, "policy", widen))
     assert rc == 1 and out["blocked"] is True, out
+
+
+def test_an_install_with_production_paths_passes_its_first_push(first_push):
+    """The wizard's --prod-paths edit (the placeholder glob replaced by the
+    adopter's folders, both policy copies, lock re-pinned) is accepted on the
+    first push with no verdict; doctor no longer warns about the placeholder."""
+    fp = first_push
+    inst = fp["tmp"] / "inst-prod"
+    _run(["node", str(fp["pack"] / "package" / "bin" / "create-tess.mjs"), str(inst), "--yes",
+          "--operator=Alex", "--mode", "personal", "--prod-paths", "src, api/**"], fp["tmp"], env=fp["env"])
+    for rel in ("core/policy/policy.yaml", ".tess/core/policy/policy.yaml"):
+        text = (inst / rel).read_text()
+        assert '        - "src/**"\n        - "api/**"\n' in text and "__REPLACE_ME__/prod/" not in text
+    head = _git(inst, "rev-parse", "HEAD")
+    for pre_push in (False, True):
+        rc, out = _gate(inst, head, pre_push=pre_push)
+        assert rc == 0 and out["blocked"] is False, out
+        assert out["release_proof"]["status"] == "accepted" and out["release_proof"]["lock_rejected"] is False
+    doc = _run([sys.executable, str(inst / ".tess/bin/tessctl"), "doctor"], inst,
+               env={**os.environ, "TESS_ROOT": str(inst)})
+    assert "__REPLACE_ME__" not in doc.stdout
+
+
+@pytest.mark.parametrize("extra", [False, True], ids=["paths-only", "paths+require_verdict-false"])
+def test_production_paths_with_any_other_policy_change_are_refused(first_push, extra):
+    """The wizard's edit made by hand on the seed passes; the same edit plus
+    one more change (the rule stops requiring a verdict) is not the wizard's
+    edit, so that first push needs a verdict."""
+    def edit(inst):
+        for rel in ("core/policy/policy.yaml", ".tess/core/policy/policy.yaml"):
+            p = inst / rel
+            text = p.read_text().replace('        - "__REPLACE_ME__/prod/**"\n', '        - "src/**"\n', 1)
+            if extra:
+                i = text.index('        - "src/**"\n')
+                j = text.index("require_verdict: true", i)
+                text = text[:j] + "require_verdict: false" + text[j + len("require_verdict: true"):]
+            p.write_text(text)
+        _run([sys.executable, str(inst / ".tess/bin/tessctl"), "lock", "--regen", "--yes", "--only",
+              ".tess/core/policy/policy.yaml"], inst, env={**os.environ, "TESS_ROOT": str(inst)})
+    rc, out = _gate(first_push["inst"], _commit_on_seed(first_push, f"prod-{extra}", edit))
+    if extra:
+        assert rc == 1 and out["blocked"] is True, out
+    else:
+        assert rc == 0 and out["blocked"] is False, out
 
 
 def _forge(fp, swap_key_file: bool):

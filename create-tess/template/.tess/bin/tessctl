@@ -19545,8 +19545,9 @@ def _gate_release_update_accepted(root: Path, candidate_paths: list, head_shas: 
 #      (RELEASE_ANCHOR_*), never keys chosen by the pushed tree alone;
 #   2. every protected path equals the release blob at the same path, except
 #      the two policy.yaml copies, which must equal the release policy with
-#      the wizard's one change applied (verifier_keys / signoff_keys emptied —
-#      it only removes trust);
+#      the wizard's changes applied: verifier_keys / signoff_keys emptied (it
+#      only removes trust) and, optionally, the production placeholder glob
+#      replaced by the adopter's own paths (it only adds review);
 #   3. tess.lock differs from the release lock only by the wizard's re-pin of
 #      those policy files, render records of committed files and timestamps.
 # Hard-floor paths are never exempted; anything else still needs a verdict.
@@ -19591,6 +19592,50 @@ def _policy_reset_registries_text(text: str) -> str:
     for key in ("verifier_keys", "signoff_keys"):
         text = _policy_reset_key_inline(text, key)
     return text
+
+
+# The wizard's second (optional) change to a fresh install's policy: the
+# production paths the adopter typed replace the placeholder glob of the
+# `example-prod-service-placeholder` rule. create-tess/src/prod-paths.js
+# writes exactly these lines; the first-push check below accepts exactly
+# them. Every other byte stays the release's, and the rule they land in
+# requires a verdict, so the change can only ADD review, never remove it.
+_PROD_PLACEHOLDER_LINE = '        - "__REPLACE_ME__/prod/**"\n'
+_PROD_PATH_LINE_RE = re.compile(r'        - "([A-Za-z0-9_.*][A-Za-z0-9_.*/-]{0,199})"')
+_PROD_PATH_EVERYTHING = frozenset({"*", "**", "**/*", "**/**"})
+_PROD_PATHS_MAX = 20
+
+
+def _prod_path_glob_ok(glob_text: str) -> bool:
+    return (bool(re.fullmatch(r"[A-Za-z0-9_.*][A-Za-z0-9_.*/-]{0,199}", glob_text))
+            and ".." not in glob_text and "//" not in glob_text
+            and POLICY_PLACEHOLDER not in glob_text and glob_text not in _PROD_PATH_EVERYTHING)
+
+
+def _policy_with_prod_paths_ok(wizard_text: str, mine: str) -> bool:
+    """True when `mine` is `wizard_text` (the release policy after the
+    registry reset) with its one production placeholder line replaced by 1 to
+    20 distinct, plain production globs, one quoted glob per line at the same
+    indent. Anything else (another byte changed, a quote, a colon, a space, a
+    `..`, an absolute or match-everything glob) is not this change."""
+    if wizard_text.count(_PROD_PLACEHOLDER_LINE) != 1:
+        return False
+    pre, post = wizard_text.split(_PROD_PLACEHOLDER_LINE)
+    if len(mine) <= len(pre) + len(post) or not (mine.startswith(pre) and mine.endswith(post)):
+        return False
+    middle = mine[len(pre):len(mine) - len(post)]
+    if not middle.endswith("\n"):
+        return False
+    lines = middle[:-1].split("\n")
+    if not 1 <= len(lines) <= _PROD_PATHS_MAX:
+        return False
+    globs = []
+    for line in lines:
+        m = _PROD_PATH_LINE_RE.fullmatch(line)
+        if not m or not _prod_path_glob_ok(m.group(1)):
+            return False
+        globs.append(m.group(1))
+    return len(set(globs)) == len(globs)
 
 
 def _policy_key_block(text: str, key: str):
@@ -21826,9 +21871,11 @@ def _gate_first_install_accepted(root: Path, candidate_paths: list, head: str, p
         elif rel in _FIRST_INSTALL_POLICY_PATHS and head_index.get(rel):
             release, mine = resolve.release_bytes(rel), head_bytes(rel)
             try:
-                if (release is not None and mine is not None and mine
-                        == _policy_reset_registries_text(release.decode("utf-8")).encode("utf-8")):
-                    accepted.add(rel)
+                if release is not None and mine is not None:
+                    wizard = _policy_reset_registries_text(release.decode("utf-8"))
+                    if (mine == wizard.encode("utf-8")
+                            or _policy_with_prod_paths_ok(wizard, mine.decode("utf-8"))):
+                        accepted.add(rel)
             except (UnicodeDecodeError, ValueError):
                 pass
     # A lock entry (keyed by its repo path, e.g. `.tess/core/policy/policy.yaml`)

@@ -19,6 +19,8 @@
 //                                          --template-source git opt-in; see
 //                                          scaffold.js resolveTemplateRef())
 //   target dir     : --target / --dir / first positional
+//   production code: --prod-paths "src,api/**" (written into the policy's
+//                    production rule; unset = leave the placeholder)
 //   unattended     : --yes
 //   overwrite      : --force
 //   skip checks    : --no-doctor / --no-verify
@@ -56,6 +58,7 @@ const VALUE_ALIASES = {
   '--dir': 'target',
   '--mode': 'mode',
   '--preset': 'preset',
+  '--prod-paths': 'prodPaths',
 };
 
 const BOOL_ALIASES = {
@@ -178,6 +181,11 @@ OPTIONS
                                  (agency only) or startup (organisation only)
   --no-onboarding                do not set up the second brain now; Tess
                                  offers it the first time you open the folder
+  --prod-paths <list>            folders holding your live app or client-facing
+                                 code, comma-separated (e.g. "src,api/**"):
+                                 changes there then need a review before they
+                                 ship. Unset: leave it for later
+                                 (docs/LAUNCH_READINESS.md)
   --target, --dir <path>         target directory (default: cwd)
   --template-source <url|path>   OPT-IN: fetch the Tess OS template from this
                                  git URL or local path instead of the copy

@@ -19,6 +19,7 @@ import {
   resolveTemplateRef,
 } from './scaffold.js';
 import { loadRoster, installSetForPath } from './roster.js';
+import { parseProdPaths, setScaffoldedProdPaths } from './prod-paths.js';
 import { TEMPLATE_SOURCE_HINT } from './git-template-source.js';
 import { writeProfile, bake, check, activateGate, regenPolicyLock, recordAnchor } from './keystone.js';
 import { runJourney } from './journey.js';
@@ -94,7 +95,12 @@ function resolveFromFlags(opts, roster) {
 
   const brainFlags = resolveBrainFlags(opts);
   if (brainFlags.error) die(brainFlags.error);
-  return { vibe, operator: op.value, conductor: cond.value, path, pathway, set, ...brainFlags };
+  const prod = parseProdPaths(opts.prodPaths);
+  if (!prod.ok) die(`--prod-paths ${prod.error}`);
+  return {
+    vibe, operator: op.value, conductor: cond.value, path, pathway, set, ...brainFlags,
+    prodPaths: prod.value,
+  };
 }
 
 // The REAL directory: a symlinked --target is followed once, here, so every
@@ -217,7 +223,10 @@ export async function main(argv) {
         const r = validateVibe(opts.vibe);
         if (!r.ok) die(r.error);
       }
-      choices = await runJourney(roster, { vibe: opts.vibe });
+      if (opts.prodPaths !== undefined && !parseProdPaths(opts.prodPaths).ok) {
+        die(`--prod-paths ${parseProdPaths(opts.prodPaths).error}`);
+      }
+      choices = await runJourney(roster, { vibe: opts.vibe, prodPaths: opts.prodPaths });
     }
     vibe = VIBES[choices.vibe];
 
@@ -253,7 +262,11 @@ export async function main(argv) {
       // source; re-pin ONLY that one entry (scoped, never an unscoped
       // regen) before doctor ever runs, so a fresh scaffold is
       // `tessctl doctor`-clean, not reported as CORE-TAMPERED.
-      if (policyReset.changed) regenPolicyLock(targetDir);
+      // The production paths the adopter named (if any) replace the
+      // placeholder glob in both policy copies (prod-paths.js); the first
+      // push accepts exactly that edit, so it needs the same scoped re-pin.
+      const prodPaths = setScaffoldedProdPaths(targetDir, choices.prodPaths);
+      if (policyReset.changed || prodPaths.changed) regenPolicyLock(targetDir);
       printBakeHeader(vibe);
       bake(targetDir, choices, makeBakeProgress(vibe));
       // The signed release's proof, so the first push needs no verdict

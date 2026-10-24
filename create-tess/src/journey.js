@@ -15,6 +15,7 @@ import { installSetForPath } from './roster.js';
 import { validateName, checkConductorName } from './validate.js';
 import { art, accent, dim, card } from './ui.js';
 import { askWhoFor, MODE_OPTIONS, presetLabel } from './brain.js';
+import { parseProdPaths } from './prod-paths.js';
 
 function bail(value) {
   if (p.isCancel(value)) {
@@ -66,6 +67,7 @@ function recap(vibe, c) {
     `${vibe.squadNoun.padEnd(10)} ${PATH_FRAMING[vibe.key][c.path].label}`,
     `Assistant  ${c.conductor}  (${c.pathway})`,
     `For        ${MODE_OPTIONS.find((o) => o.value === c.mode).label}${c.preset ? ` (${presetLabel(c.preset)})` : ''}`,
+    `App code   ${prodPathsLine(c.prodPaths)}`,
   ].join('\n');
 }
 
@@ -110,9 +112,35 @@ async function askAssistant(message, operatorName, set) {
   }
 }
 
+// Where the live app code is, so changes there need a review before they
+// ship. Enter skips (the folder then says so until it is set). A value given
+// with --prod-paths is used without asking.
+export const PROD_PATHS_PROMPT =
+  'Which folders hold your live app or client-facing code? Changes there will need a review before they ship.';
+export const PROD_PATHS_SKIP_HINT = 'e.g. src, api  (press Enter to skip; you can set this later)';
+
+async function askProdPaths(given) {
+  if (given !== undefined) return parseProdPaths(given).value;
+  const raw = bail(
+    await p.text({
+      message: PROD_PATHS_PROMPT,
+      placeholder: PROD_PATHS_SKIP_HINT,
+      validate: (val) => {
+        const r = parseProdPaths(val);
+        return r.ok ? undefined : r.error;
+      },
+    }),
+  );
+  return parseProdPaths(raw).value;
+}
+
+export function prodPathsLine(globs) {
+  return globs && globs.length ? globs.join(', ') : 'not set yet (docs/LAUNCH_READINESS.md)';
+}
+
 // The default setup (v1.0 e2e review, S4): plain words, four questions, no
 // theme, no "conductor", no lens lists. Same install as every other skin.
-async function runPlainJourney(roster) {
+async function runPlainJourney(roster, { prodPaths: givenProd } = {}) {
   const vibe = VIBES.plain;
   p.intro(accent('Tess OS setup'));
   p.note(vibe.lore, 'Welcome');
@@ -126,15 +154,17 @@ async function runPlainJourney(roster) {
     await p.select({ message: vibe.pathwayPrompt(asst.name), options: PLAIN_PATHWAY_OPTIONS }),
   );
   const { mode, preset, said } = await askWhoFor(p, bail);
+  const prodPaths = await askProdPaths(givenProd);
   const choices = {
     vibe: 'plain', operator: op.name, path, conductor: asst.name, pathway, set, mode, preset,
-    said: { ...said, operator: op.typed, conductor: asst.typed },
+    prodPaths, said: { ...said, operator: op.typed, conductor: asst.typed },
   };
   p.note([
     `Your name       ${choices.operator}`,
     `Your assistant  ${choices.conductor}`,
     `Talks to you    ${PLAIN_PATHWAY_OPTIONS.find((o) => o.value === pathway).label}`,
     `For             ${MODE_OPTIONS.find((o) => o.value === mode).label}${preset ? ` (${presetLabel(preset)})` : ''}`,
+    `App code        ${prodPathsLine(prodPaths)}`,
   ].join('\n'), 'Your choices');
   const go = bail(await p.confirm({ message: vibe.recapVerb, active: 'Yes', inactive: 'No, stop', initialValue: true }));
   if (!go) {
@@ -154,10 +184,10 @@ const PLAIN_PATHWAY_OPTIONS = [
 
 // `requested` is --vibe (validated by the caller). No --vibe: the plain setup.
 // A themed skin is opt-in only: `--vibe rpg|command|studio`.
-export async function runJourney(roster, { vibe: requested } = {}) {
+export async function runJourney(roster, { vibe: requested, prodPaths: givenProd } = {}) {
   // S0 — cold open (neutral platform wordmark; vibe lore comes after select).
   process.stdout.write(art(NEUTRAL) + '\n');
-  if ((requested || DEFAULT_VIBE) === 'plain') return runPlainJourney(roster);
+  if ((requested || DEFAULT_VIBE) === 'plain') return runPlainJourney(roster, { prodPaths: givenProd });
   p.intro(accent('Tess OS — founding setup'));
 
   // S1 — VIBE (loops for the Command-vibe doctrine gate, the only branch).
@@ -219,10 +249,13 @@ export async function runJourney(roster, { vibe: requested } = {}) {
   // S5b — WHO IS THIS FOR (second-brain mode + optional preset, brain.js).
   const { mode, preset, said } = await askWhoFor(p, bail);
 
+  // S5c — WHERE THE APP CODE IS (skippable).
+  const prodPaths = await askProdPaths(givenProd);
+
   // S6 — RECAP + the single write gate. Nothing has touched the target yet.
   const choices = {
     vibe: vibe.key, operator: operatorName, path, conductor, pathway, set, mode, preset,
-    said: { ...said, operator: op.typed, conductor: asst.typed },
+    prodPaths, said: { ...said, operator: op.typed, conductor: asst.typed },
   };
   p.note(recap(vibe, choices), "Here's the world you've built");
   const go = bail(

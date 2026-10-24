@@ -111,7 +111,13 @@ code, `./tessctl doctor` prints:
 
 and `./tessctl launch mark-launched` refuses.
 
-To set it, in **your own terminal** (agents cannot write this file):
+**Easiest: at install.** `npm create tess` asks which folders hold your live
+app or client-facing code (press Enter to skip), or take them as a flag:
+`npm create tess my-os -- --prod-paths "src,api/**"`. A folder name covers
+everything under it. The wizard writes them into this rule, the first push
+still passes without a review, and the warning never appears.
+
+To set it later, in **your own terminal** (agents cannot write this file):
 
 1. Open `core/policy/policy.yaml` and give the rule a real `id` and your
    production and client-facing paths as its `globs`, for example:
