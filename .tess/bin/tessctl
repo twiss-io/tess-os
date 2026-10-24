@@ -25193,12 +25193,47 @@ def _run_check_return_manifest_artifacts_exist_under_root(root: Path, contract_t
         if not isinstance(artifact, dict):
             continue
         artifact_path = artifact.get("path")
-        if isinstance(artifact_path, str) and artifact_path and not (root / artifact_path).exists():
+        if not (isinstance(artifact_path, str) and artifact_path):
+            continue
+        if not (root / artifact_path).exists():
             violations.append(
                 f"$.artifacts[{i}].path: '{artifact_path}' does not exist under the Tess root "
                 f"{root} (MEDIUM-2, checked ROOT-relative — not CWD-relative)"
             )
+        elif not _run_artifact_resolves_under_root(root, artifact_path):
+            violations.append(
+                f"$.artifacts[{i}].path: '{artifact_path}' resolves outside the Tess root {root} "
+                f"(an absolute path, a '..' or a link that leaves the root; checked by inode identity)"
+            )
     return violations
+
+
+def _run_artifact_resolves_under_root(root: Path, artifact_path: str) -> bool:
+    """1.0.0 (cleanup inventory, artifact containment): True only when
+    `artifact_path`, with every link followed, is an existing entry strictly
+    inside `root`. `root / "/etc/hosts"` is `/etc/hosts`, so the existence
+    check alone accepted an absolute path anywhere on the machine (and a
+    `..` or a link out of the root) as "under the root".
+
+    Containment is decided by inode identity: each folder above the resolved
+    target is compared with `root` by `(st_dev, st_ino)`, never by path text,
+    so case folding, Unicode normalisation and links cannot make two spellings
+    of one folder disagree. Any error while checking is "not under the root"
+    (fail-closed)."""
+    try:
+        root_st = os.stat(root)
+        target = Path(os.path.realpath(os.path.join(str(root), artifact_path)))
+        os.stat(target)
+    except (OSError, ValueError):
+        return False
+    for parent in target.parents:
+        try:
+            st = os.stat(parent)
+        except OSError:
+            return False
+        if (st.st_dev, st.st_ino) == (root_st.st_dev, root_st.st_ino):
+            return True
+    return False
 
 
 def _run_check_verdict_signature(root: Path, instance: dict) -> tuple:
