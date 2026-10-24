@@ -17,23 +17,23 @@ prompt and flag, a heartbeat notifier for it, and two .env.example
 placeholders. v0.2.1 removed the placeholders (operator decision,
 2026-09-29), so the strict xfail that recorded them is gone.
 
+1.0.0 (operator decision, 22 Oct 2026: remove the channel from Tess OS
+entirely) removed the last residue: the wizard README's note, the wizard
+test of the removed flag, a sample path in a wizard test, and this guard's
+own file name, which named the channel.
+
 This guard reads the real files and fails on any case-insensitive match of
 the channel's name (NEEDLE below; spelled in two halves so this file does not
-match itself), except a small explicit allowlist:
+match itself), and on any tracked path that names it, except one explicit
+allowlist entry: CHANGELOG history (dated entries are not rewritten), in the
+repository and in its bundled create-tess/template/ copy.
 
-  * CHANGELOG history (dated entries are not rewritten);
-  * the one docs note (create-tess/README.md): external notification
-    channels are optional operator add-ons, outside the base harness;
-  (The bundled create-tess/template/ copies were rebuilt at the v1.0.0
-  integration, so they need no allowlist entry.)
-
-test_literal_grep_finds_only_changelog_and_one_doc_line runs a literal
-`git grep -i` over the shipped tree and pins the result to exactly the
-CHANGELOG and that one doc line.
+test_literal_grep_finds_only_changelog runs a literal `git grep -i` over the
+shipped tree and pins the result to exactly the CHANGELOG.
 
 Scope. In the Tess OS repository (create-tess/src exists) every tracked file
-is base harness except the wizard's own test suite (create-tess/test/, never
-scaffolded) and reviews/verdicts/ (plus any create-tess/template/reviews/verdicts/
+is base harness, the wizard's own test suite (create-tess/test/) included
+since 1.0.0, except reviews/verdicts/ (plus any create-tess/template/reviews/verdicts/
 copy): per-PR review records such as a reviewer's verdict on this very change. They are
 stripped at integration (integrate_step.sh removes reviews/verdicts/ from
 every merge) and are never scaffolded, and a verdict that names the removed
@@ -60,22 +60,19 @@ PRODUCT_REPO = (REPO_ROOT / "create-tess" / "src").is_dir()
 NEEDLE_TEXT = "tele" "gram"  # two halves: this file must not match itself
 NEEDLE = re.compile(NEEDLE_TEXT, re.IGNORECASE)
 
-_THIS = "tests/test_base_harness_no_" + NEEDLE_TEXT + ".py"
+_THIS = "tests/test_base_harness_no_chat_channel.py"
 ALLOWLIST = {
     "CHANGELOG.md": "dated release history is not rewritten",
     "create-tess/template/CHANGELOG.md": "dated release history is not rewritten",
-    "create-tess/README.md": "the one docs note: external notification channels "
-    "are optional operator add-ons, outside the base harness",
 }
 
-# Not part of the base harness: the wizard's own test suite is never copied
-# into a scaffold (it may assert that the removed flag is rejected), and
-# reviews/verdicts/ holds per-PR review records (verdicts), stripped at
-# integration and never scaffolded; a verdict on this change will name the
-# channel. Narrowed from the whole reviews/ tree (Cyra, notg PR #197 low
-# finding, decisions item 13): only the verdicts subtree is exempt, so any
-# OTHER file under reviews/ still counts as base harness surface.
-NOT_BASE_PREFIXES = ("create-tess/test/", "reviews/verdicts/", "create-tess/template/reviews/verdicts/")
+# Not part of the base harness: reviews/verdicts/ holds per-PR review records
+# (verdicts), stripped at integration and never scaffolded; a verdict on this
+# change will name the channel. Narrowed from the whole reviews/ tree (Cyra,
+# notg PR #197 low finding, decisions item 13): only the verdicts subtree is
+# exempt, so any OTHER file under reviews/ still counts as base harness
+# surface. 1.0.0: the wizard's test suite (create-tess/test/) is in scope.
+NOT_BASE_PREFIXES = ("reviews/verdicts/", "create-tess/template/reviews/verdicts/")
 
 # Files that must be in scope, so the scan can never go vacuous.
 MUST_SCAN_PRODUCT = (
@@ -92,6 +89,8 @@ MUST_SCAN_PRODUCT = (
     "conductor/guardrails.md",
     "create-tess/src/journey.js",
     "create-tess/src/args.js",
+    "create-tess/README.md",
+    "create-tess/test/units.test.js",
     "create-tess/template/CLAUDE.md",
     "create-tess/template/.tess/core/conductor/guardrails.md",
     "scripts/heartbeat/notify.py",
@@ -164,14 +163,14 @@ def test_scan_is_not_vacuous():
 
 
 @pytest.mark.skipif(not PRODUCT_REPO, reason="product-repo scope rule")
-def test_only_review_records_and_wizard_tests_leave_scope():
-    """reviews/ and create-tess/test/ are the only exclusions; a look-alike
-    path elsewhere (e.g. docs/reviews/) stays in scope."""
+def test_only_review_records_leave_scope():
+    """reviews/verdicts/ is the only exclusion; a look-alike path elsewhere
+    (e.g. docs/reviews/) and the wizard's own tests stay in scope."""
     assert not _in_scope("reviews/verdicts/2026-09-24-pr197-notg.cyra.verdict.md")
     assert not _in_scope("create-tess/template/reviews/verdicts/x.md")
-    assert not _in_scope("create-tess/test/args.test.js")
     for rel in ("docs/reviews/x.md", "conductor/reviews.md", ".tess/core/conductor/guardrails.md",
-                "create-tess/template/conductor/guardrails.md", "create-tess/src/args.js"):
+                "create-tess/template/conductor/guardrails.md", "create-tess/src/args.js",
+                "create-tess/test/args.test.js"):
         assert _in_scope(rel), rel
 
 
@@ -186,10 +185,9 @@ def test_base_harness_names_no_chat_channel():
 
 
 def test_allowlist_stays_small_and_explicit():
-    # Exactly the reasons named in the module docstring (the two CHANGELOG
-    # copies and the one doc note; the template rebuild at v1.0.0 removed the
-    # two pending-rebuild entries). Growing it needs a reason in the docstring.
-    assert len(ALLOWLIST) == 3
+    # Exactly the reason named in the module docstring: the two CHANGELOG
+    # copies. Growing it needs a reason in the docstring.
+    assert len(ALLOWLIST) == 2
     assert _THIS not in ALLOWLIST, "this guard must not match itself"
     assert ".env.example" not in ALLOWLIST, "v0.2.1 removed the placeholders"
     for rel, reason in ALLOWLIST.items():
@@ -267,12 +265,15 @@ def _git_grep_hits() -> dict:
 
 @pytest.mark.skipif(not PRODUCT_REPO or not (REPO_ROOT / ".git").exists(),
                     reason="product-repo git checkout only")
-def test_literal_grep_finds_only_changelog_and_one_doc_line():
-    """What an operator sees running `grep -ri <channel>` over the shipped tree
-    (create-tess/template/ is a build artifact; see the pending-rebuild xfail)."""
-    hits = {rel: lines for rel, lines in _git_grep_hits().items()
-            if _in_scope(rel) and not rel.startswith("create-tess/template/")}
-    assert set(hits) <= {"CHANGELOG.md", "create-tess/README.md"}, sorted(hits)
-    assert len(hits.get("create-tess/README.md", [])) == 1, hits.get("create-tess/README.md")
-    doc_line = " ".join(hits["create-tess/README.md"])
-    assert "optional" in doc_line, doc_line
+def test_literal_grep_finds_only_changelog():
+    """What an operator sees running `grep -ri <channel>` over the shipped tree,
+    the bundled create-tess/template/ copy included."""
+    hits = {rel for rel in _git_grep_hits() if _in_scope(rel)}
+    assert hits <= {"CHANGELOG.md", "create-tess/template/CHANGELOG.md"}, sorted(hits)
+
+
+def test_no_tracked_path_names_the_channel():
+    """No file or folder name names the channel (1.0.0: this guard's own file
+    name did)."""
+    bad = [rel for rel in _tracked_files() if _in_scope(rel) and NEEDLE.search(rel)]
+    assert not bad, bad

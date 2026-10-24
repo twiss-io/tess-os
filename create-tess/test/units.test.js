@@ -115,10 +115,10 @@ test('LOW: a value flag rejects a following flag as its value', () => {
   assert.equal(parseArgs(['--operator=Alex']).operator, 'Alex');
 });
 
-// v0.2.0 (notg): the wizard no longer wires an external chat channel, so the
-// old channel flag is gone and is rejected like any other unknown flag.
-test('notg: the removed chat-channel flag is an unknown flag', () => {
-  assert.throws(() => parseArgs(['--telegram', '-1001234']), /unknown flag: --telegram/);
+// The wizard wires no external chat channel (removed in v0.2.0; its flag is
+// rejected like any other unknown flag).
+test('an unknown flag is rejected by name', () => {
+  assert.throws(() => parseArgs(['--no-such-flag', '-1001234']), /unknown flag: --no-such-flag/);
 });
 
 // HIGH-2(b) — names must start with an alphanumeric (no leading hyphen), so a
@@ -262,7 +262,7 @@ test('Quinn-MED: drifted secret patterns are now excluded (lockstep with .gitign
     // bare secret/runtime dirs at any depth (not only `.claude/`-anchored)
     'secrets/api-key.txt',
     'tess-secrets/token.json',
-    'channels/telegram.json',
+    'channels/bot-token.json',
     'nested/dir/secrets/leaked.txt',
     // `*.env.json` files (only `.env` / `.env.*` were handled before)
     'prod.env.json',

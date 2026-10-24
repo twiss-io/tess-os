@@ -200,10 +200,10 @@ doc (`kb/wiki/synthesis/2026-06-27-tess-os-onboarding-experience.md`):
 - **Path before conductor** (task order) so the C3 name-collision check has the
   real install set and the squad reveal lands before the conductor is named.
 
-The journey beats from the brief are present, except the optional Telegram step,
-which v0.2.0 removed: the base harness reports in the active session of any
-runtime, and external notification channels are optional operator add-ons,
-outside the base harness. The only design-doc
+The journey beats from the brief are present, except the optional external
+chat-channel step, which v0.2.0 removed: the base harness reports in the active
+session of any runtime and needs no external chat or notification service.
+The only design-doc
 divergence is the path/conductor pairing, chosen because it makes the C3 check
 implementable at conductor-naming time.
 
