@@ -749,7 +749,7 @@ def _check_key_text(cwd: str, argv: list, raw: str, v, ctx: "_Ctx | None" = None
                 return
             # round 4: names Tess did not see may include it. 1.0.0 (U2, U7):
             # not when no name under the pattern's folder can leave the project.
-            if globbed.truncated and not _key_listing_safe(root, cwd, part, globbed):
+            if globbed.truncated and not _key_listing_safe(root, cwd, part, globbed, ctx):
                 v.add(ASK, f"{a} matches more names than Tess lists one by one (or a folder it "
                            "cannot read), so Tess cannot tell whether it reaches its key directory")
 
@@ -1104,13 +1104,19 @@ def _links_stay_inside(root: Path, head: str) -> bool:
     return ok
 
 
-def _key_listing_safe(root: "Path | None", cwd: str, pattern: str, found: "_Matches") -> bool:
+def _key_listing_safe(root: "Path | None", cwd: str, pattern: str, found: "_Matches",
+                      ctx: "_Ctx | None" = None) -> bool:
     """1.0.0 (U2, U7): a listing cut short cannot reach the key directory.
     True only when the key directory is not inside the project, the
     pattern's fixed folder is inside the project with no link on it, no step
-    can climb out, every folder can be read, and every link under that
-    folder stays inside the project."""
-    if root is None or found.cause == "unreadable" or not _keys_outside_project(root):
+    can climb out, every folder can be read, every link under that folder
+    stays inside the project, and (review fix) nothing earlier in the command
+    can have changed what is on disk: no file changed, no link made, not a
+    function body, no loop or function (_u1_quiet), so the scan Tess makes
+    now is what the command will see."""
+    if root is None or ctx is None or not _u1_quiet(ctx):
+        return False
+    if found.cause == "unreadable" or not _keys_outside_project(root):
         return False
     head = _project_head(root, cwd, pattern)
     return head is not None and _links_stay_inside(root, head)
@@ -1161,7 +1167,10 @@ def _fast_clear(fast: dict, path: str) -> bool:
     base = fast["base"]
     if fast["ctl"] or not fast["keys"] or path == base or not _inside(path, base):
         return False
-    if os.path.islink(path) or re.search(r"(?i)(^|/)etc/gitconfig$", path):
+    # Review fix (phase 2): no part of the path may be a link, not only its
+    # last name. A glob step that matches a link to a folder is entered by
+    # the shell (`many/*/guardrails.md` through `many/zz -> conductor`).
+    if os.path.realpath(path) != path or re.search(r"(?i)(^|/)etc/gitconfig$", path):
         return False
     rel = path[len(base.rstrip(os.sep)) + 1:]
     return not _dir_may_hold(fast, rel.rsplit("/", 1)[0] if "/" in rel else "")

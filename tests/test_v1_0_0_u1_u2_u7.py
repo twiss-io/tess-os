@@ -254,6 +254,41 @@ def test_u2_outside_project_keeps_the_old_limits(big, tmp_path):
     assert _all(big, f"rm -f {d}/*") == ASK
 
 
+# ---------------------------------------------------------------- review fixes (phase 2)
+def test_review_big_write_through_a_linked_folder_is_not_fast_cleared(big):
+    """HIGH: a big listing whose glob step matches a link to a protected
+    folder (`many/*/guardrails.md` with `many/zz -> conductor`) must not skip
+    the identity check for the name reached through the link. Allowed (all
+    three) on 264e9ca; the real shell deletes conductor/guardrails.md."""
+    d = big[0] / "many"
+    d.mkdir()
+    try:
+        for i in range(1100):
+            (d / f"p{i:04d}").mkdir()
+            (d / f"p{i:04d}" / "guardrails.md").write_text("x")
+        os.symlink(str(big[0] / "conductor"), str(d / "zz"))
+        assert _all(big, "rm -f many/*/guardrails.md") == DENY
+        fast = G._fast_cache(big[0])
+        base = os.path.realpath(str(big[0]))
+        assert not G._fast_clear(fast, os.path.join(base, "many", "zz", "guardrails.md"))
+    finally:
+        shutil.rmtree(d)
+
+
+@pytest.mark.parametrize("cmd", [
+    "python3 mk.py; cat logs/*.log",
+    "touch x && ls node_modules/*",
+    "for i in 1; do ls node_modules/*; done",
+    "f() { du -sh node_modules/*; }; f",
+    "ln -s ../logs src/l; ls node_modules/*",
+])
+def test_review_key_ask_kept_after_an_earlier_change(big, cmd):
+    """MEDIUM: the key-folder ask for a listing cut short is dropped only when
+    nothing earlier in the command can change what is on disk. Allowed on
+    264e9ca for the first four."""
+    assert _all(big, cmd) == ASK
+
+
 # ---------------------------------------------------------------- helpers
 def test_fast_clear_never_clears_what_protected_hit_flags(big):
     root = big[0]
