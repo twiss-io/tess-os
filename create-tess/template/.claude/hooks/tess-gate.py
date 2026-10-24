@@ -998,7 +998,7 @@ def _parts_match(names: list, pats: list) -> "str | None":
 
 
 # --------------------------------------------------------------------------- 1.0.0 usability (U1, U2, U7)
-# Reid's round-4 usability items, approved for 1.0.0 (Xavier, 22 Oct: "soften
+# Reid's round-4 usability items, approved for 1.0.0 (operator decision, 22 Oct: "soften
 # the node_modules / recursive-delete prompts"):
 #   U1  a delete or chmod whose target is a recursive glob (`rm -rf
 #       **/__pycache__`) was refused from the text alone, because `**` can
