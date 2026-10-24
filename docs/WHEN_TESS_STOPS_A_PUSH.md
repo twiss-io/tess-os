@@ -82,7 +82,9 @@ and signing keys, see [Gate operation and custody](GATE_QUICKSTART.md).
 
 A folder made with `npm create tess` carries the proof of the signed Tess OS
 release it came from (`.tess/release-proof.json`). Its first push passes as
-long as Tess's files are exactly that release.
+long as Tess's files are exactly that release (plus the setup's own changes:
+the emptied reviewer-key lists and, if you named them, your app folders in the
+production rule).
 
 If Tess says "this is the first push of this folder, and Tess cannot confirm
 that its own files are an unchanged Tess OS release", the folder was made another way (a git clone, a copy,

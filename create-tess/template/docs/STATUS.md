@@ -97,7 +97,8 @@ Re-verified on 2026-09-29. The full trust model is in
    changes, deletions and renames of protected paths. A fresh install's
    first push passes the gate with no reviewer keys because it carries the
    signed release's proof; any protected file that differs from that release
-   still needs a verdict.
+   (other than the setup's emptied key registries and the production folders
+   the adopter named) still needs a verdict.
 4. **The gate is a merge check, not the release control.** The A14
    multi-push policy-reduction case is out of scope under the trust model:
    `main` protections are best-effort, and users are protected by the signed
