@@ -40,6 +40,13 @@ def tessctl(root: Path, *args: str) -> subprocess.CompletedProcess:
 @pytest.fixture(scope="module")
 def onboarded(tmp_path_factory):
     root = h.full_instance(tmp_path_factory.mktemp("upgrade"), operator="Mira Okafor")
+    # create-tess renders the doctrine from the operator profile before handing the
+    # instance over (keystone.js bake(): ... `render`). full_instance() writes the
+    # profile but does not render, so CLAUDE.md, AGENTS.md and personality.md would
+    # stay stale and `doctor` would only pass if another test in this module had
+    # rendered first. Render here so every test starts from the shape a user gets.
+    rendered = tessctl(root, "render")
+    assert rendered.returncode == 0, rendered.stdout[-2000:] + rendered.stderr[-2000:]
     done = h.onboard_fixture(root, "agency-solo")
     assert done.returncode == 0, done.stdout + done.stderr
     assert h.git(root, "status", "--porcelain").stdout == ""
