@@ -117,13 +117,23 @@ app or client-facing code (press Enter to skip), or take them as a flag:
 everything under it. The wizard writes them into this rule, the first push
 still passes without a review, and the warning never appears.
 
+**Updates keep them.** `./tessctl update` copies your list of paths into the
+new release's version of this rule; the rest of the rule (who must review,
+whether a review is required) comes from the signed release. It does this
+only while the rule's `id` stays `example-prod-service-placeholder` and you
+changed nothing in it but its `globs` (plain paths such as `src/**`, at most
+20). If you changed anything else in the rule, the update shows the
+difference and asks you to approve the release's version, and you set your
+paths again afterwards.
+
 To set it later, in **your own terminal** (agents cannot write this file):
 
-1. Open `core/policy/policy.yaml` and give the rule a real `id` and your
-   production and client-facing paths as its `globs`, for example:
+1. Open `core/policy/policy.yaml` and put your production and client-facing
+   paths in the rule's `globs`. Keep its `id`, so `./tessctl update` carries
+   your paths into later releases. For example:
 
    ```yaml
-       - id: app-code
+       - id: example-prod-service-placeholder
          ...
          globs:
            - "src/**"

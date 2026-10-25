@@ -140,16 +140,17 @@ RELEASE_POLICY = (REPO_ROOT / "core" / "policy" / "policy.yaml").read_text(encod
 
 
 def _installed(project, gpg_key, tmp_path, run_cli, engine, policy_extra: str = "",
-               release_policy: str | None = None) -> str:
+               release_policy: str | None = None, installed_policy: str | None = None) -> str:
     """An install at v2.0.0 whose policy is the release policy with the
     wizard's registry reset, core-managed in the lock, and a signed upstream
     v2.1.0 that changes guardrails and ships the maintainers' policy (with
     their Cyra verifier key), a new core file its own lock adopts, and a
-    workflow (core copy + live copy) that neither lock manages."""
+    workflow (core copy + live copy) that neither lock manages. `installed_policy`
+    replaces the installed policy (both copies)."""
     wizard_policy = engine._policy_reset_registries_text(RELEASE_POLICY)
     assert "Cyra:" in RELEASE_POLICY and wizard_policy != RELEASE_POLICY
     project.add(GUARD_LIVE, OLD, tier="security")
-    project.add(POL_LIVE, wizard_policy, tier="security", core_key=POL_KEY)
+    project.add(POL_LIVE, installed_policy or wizard_policy, tier="security", core_key=POL_KEY)
     project.add(None, "# Tess OS\n\nRoot: {{TESS_ROOT}}\n",
                 core_key=".tess/core/templates/CLAUDE.md.tpl", render_live=False)
     project.add(None, '{"hooks": {}}\n', core_key=".tess/core/settings-core.json",

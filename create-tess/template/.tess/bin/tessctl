@@ -19288,12 +19288,19 @@ def _gate_release_policy_ok(base_text: str | None, head_data: bytes | None,
 
     v1.0.0 (item a): the rules / hard_floor_rules may differ only when the
     committed operator approval for `tag` names exactly this base -> head
-    rule change (_policy_approval_covers); the registries never may."""
+    rule change (_policy_approval_covers); the registries never may.
+
+    RC phase 5: the head may also carry the base's production globs in the
+    release's placeholder rule (_policy_carry_prod_paths, recomputed here
+    from the base), and nothing else of the base's."""
     if base_text is None or head_data is None or release_data is None:
         return False
     try:
         release_text, head_text = release_data.decode("utf-8"), head_data.decode("utf-8")
-        if head_text not in (release_text, _policy_carry_registries(release_text, base_text)):
+        with_keys = _policy_carry_registries(release_text, base_text)
+        # RC phase 5: or with the base's production globs carried too.
+        if head_text not in (release_text, with_keys,
+                             _policy_carry_prod_paths(with_keys, base_text)):
             return False
         base_doc, head_doc = yaml.safe_load(base_text), yaml.safe_load(head_text)
     except (UnicodeDecodeError, ValueError, yaml.YAMLError):
@@ -19638,6 +19645,90 @@ def _policy_with_prod_paths_ok(wizard_text: str, mine: str) -> bool:
     return len(set(globs)) == len(globs)
 
 
+# v1.0.0 RC phase 5: `tessctl update` carries the adopter's production paths.
+# A release policy ships the placeholder glob; without this, an update either
+# stopped to ask for a rule change ("no longer protects src/**") or, once
+# accepted, put the placeholder back and the ship gate reviewed no app code.
+# Only the glob list moves: every other byte, including require_verdict and
+# allowed_verifiers, stays the signed release's. The installed rule must
+# equal the release's rule in everything but its globs; any other difference
+# (the adopter's or the release's) carries nothing, and the update's usual
+# rule-change approval applies.
+_PROD_PLACEHOLDER_GLOB = POLICY_PLACEHOLDER + "/prod/**"
+
+
+def _policy_placeholder_rule_index(doc):
+    """Index of the one `rules` entry whose globs are exactly the production
+    placeholder, or None."""
+    p = _policy_section(doc)
+    rules = p.get("rules") if p is not None else None
+    if not isinstance(rules, list):
+        return None
+    hits = [i for i, r in enumerate(rules)
+            if isinstance(r, dict) and r.get("globs") == [_PROD_PLACEHOLDER_GLOB]]
+    return hits[0] if len(hits) == 1 else None
+
+
+def _policy_prod_paths_to_carry(new_text: str, old_text: str) -> tuple:
+    """(globs, why) for `update`. `globs` is the installed production glob
+    list to write into the release policy's placeholder rule, or None.
+    `why` explains a refusal when the installed policy names its own
+    production paths but they cannot be carried; it is None when there is
+    nothing to carry."""
+    if new_text.count(_PROD_PLACEHOLDER_LINE) != 1:
+        return None, None
+    try:
+        new_doc, old_doc = yaml.safe_load(new_text), yaml.safe_load(old_text)
+    except yaml.YAMLError:
+        return None, None
+    idx = _policy_placeholder_rule_index(new_doc)
+    if idx is None:
+        return None, None
+    new_rule = _policy_section(new_doc)["rules"][idx]
+    rid = new_rule.get("id")
+    if not (isinstance(rid, str) and rid and new_rule.get("require_verdict") is True
+            and new_rule.get("allowed_verifiers")):
+        return None, None
+    old_rules = (_policy_section(old_doc) or {}).get("rules")
+    mine = [r for r in (old_rules if isinstance(old_rules, list) else [])
+            if isinstance(r, dict) and r.get("id") == rid]
+    if len(mine) != 1:
+        return None, None
+    old_rule = mine[0]
+    globs = old_rule.get("globs")
+    if globs == [_PROD_PLACEHOLDER_GLOB]:
+        return None, None
+    if dict(old_rule, globs=new_rule.get("globs")) != new_rule:
+        return None, (f"your rule '{rid}' differs from the release's in more than its "
+                      f"globs")
+    if not (isinstance(globs, list) and 1 <= len(globs) <= _PROD_PATHS_MAX
+            and all(isinstance(g, str) and _prod_path_glob_ok(g) for g in globs)
+            and len(set(globs)) == len(globs)):
+        return None, (f"your rule '{rid}' has globs the setup could not have written "
+                      f"(1 to {_PROD_PATHS_MAX} plain paths such as src/**)")
+    return list(globs), None
+
+
+def _policy_carry_prod_paths(new_text: str, old_text: str) -> str:
+    """`new_text` (a release policy, registries already carried) with the
+    installed production globs in place of its placeholder line, in exactly
+    the form the setup writes (_policy_with_prod_paths_ok). Returns
+    `new_text` unchanged when nothing may be carried."""
+    globs, _why = _policy_prod_paths_to_carry(new_text, old_text)
+    if not globs:
+        return new_text
+    out = new_text.replace(_PROD_PLACEHOLDER_LINE,
+                           "".join(f'        - "{g}"\n' for g in globs))
+    try:
+        want = yaml.safe_load(new_text)
+        _policy_section(want)["rules"][_policy_placeholder_rule_index(want)]["globs"] = globs
+        if not (_policy_with_prod_paths_ok(new_text, out) and yaml.safe_load(out) == want):
+            return new_text
+    except (yaml.YAMLError, TypeError, KeyError):
+        return new_text
+    return out
+
+
 def _policy_key_block(text: str, key: str):
     """(lines, start, end, indent) of the `key:` block in policy text, using
     the same scan as _policy_reset_key_inline; None when the key is absent."""
@@ -19714,7 +19805,11 @@ def _update_carry_policy_registries(root: Path) -> None:
         return
     try:
         new_text = _staging_verified_bytes(root, rel).decode("utf-8")   # v1.0 audit
-        carried = _policy_carry_registries(new_text, current.read_text(encoding="utf-8"))
+        old_text = current.read_text(encoding="utf-8")
+        with_keys = _policy_carry_registries(new_text, old_text)
+        # RC phase 5: then the installed production paths (only the glob list).
+        carried = _policy_carry_prod_paths(with_keys, old_text)
+        globs, why_not = _policy_prod_paths_to_carry(with_keys, old_text)
     except (UnicodeDecodeError, ValueError) as e:
         sys.exit(f"tessctl update: cannot carry your policy key registries into the new "
                  f"release policy ({e}); nothing was changed.")
@@ -19722,7 +19817,15 @@ def _update_carry_policy_registries(root: Path) -> None:
         _atomic_write_bytes(staged, carried.encode("utf-8"))
         if _staging_verified_table(root) is not None:   # v1.0 audit: tessctl's own write
             _STAGING_STATE["verified"][rel] = sha256_bytes(carried.encode("utf-8"))
+    if with_keys != new_text:
         print(f"  kept your verifier_keys / signoff_keys in {rel} (not the release's)")
+    if carried != with_keys:
+        print(f"  kept your production paths in {rel}: {', '.join(globs)}")
+    elif why_not:
+        print(f"  NOTE: your production paths were not carried into the new release policy: "
+              f"{why_not}. If you approve the release's rules below, the ship gate goes back "
+              f"to the placeholder; set your paths again afterwards "
+              f"(docs/LAUNCH_READINESS.md, section 2).")
 
 
 # ---------------------------------------------------------------------------
