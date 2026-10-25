@@ -41,14 +41,15 @@ class _Sudo:
     """Records sudo calls and flips the fake flags as the real command would."""
 
     def __init__(self, engine, monkeypatch, root):
-        self.calls, self.locked = [], set()
+        self.calls, self.locked, self.ids = [], set(), []
         monkeypatch.setattr(engine, "_harden_flag",
                             lambda p: os.path.realpath(str(p)) in self.locked)
         monkeypatch.setattr(engine, "_harden_tool",
                             lambda: (["chflags", "schg"], ["chflags", "noschg"]))
 
-        def run(r, argv, rels):
+        def run(r, argv, rels, ids=None):
             self.calls.append((list(argv), list(rels)))
+            self.ids.append(ids)
             for rel in rels:
                 (self.locked.add if argv[1] == "schg" else self.locked.discard)(
                     os.path.realpath(str(r / rel)))

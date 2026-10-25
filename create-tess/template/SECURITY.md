@@ -410,9 +410,37 @@ security reviews; they are stated so nobody relies on a check that is not there.
   `.claude/hooks/` holds `.sh` files, so a recursive write such as `chmod +x
   **/*.sh` or `rm -f **/*.sh` is refused, as `chmod +x .claude/hooks/*.sh`
   is; use `find . -path ./.claude -prune -o -name '*.sh' -exec chmod +x {} +`.
-  An unquoted variable's value is read as a pattern too (bash always; zsh
-  with `GLOB_SUBST`), with the same worst case. Not covered: zsh `BRACE_CCL`,
-  which makes `{ab}` read as `a b`. Inside the project, a glob listing that only ran past the limits
+  An unquoted variable or command-substitution value is read as a pattern too
+  (bash always; zsh with `GLOB_SUBST`), with the same worst case, and `(`, `|`
+  or zsh's `<N-M>` inside such a value asks, as the raw words do (a4113f7
+  review, item b). A glob that matches nothing is removed by the shell under
+  zsh `NULL_GLOB` / `CSH_NULL_GLOB` or bash `nullglob`, sliding the words after
+  it into write-target positions; the write-target checks are run for the
+  command and for every list those vanishing globs could leave behind, and
+  past six such globs Tess asks (item d). An assignment value is globbed under
+  zsh `GLOB_ASSIGN`, so an unquoted glob in `NAME=value` is read as a pattern
+  at every later use, quoted or not (item e). Glob matching is treated as
+  case-insensitive throughout (zsh `NO_CASE_GLOB`, bash `nocaseglob`, and the
+  common case-insensitive filesystem): the protected-path match is case-blind,
+  and a handler name read for the task-start / hook rule is matched case-blind.
+  The complete per-option sweep — every zsh and bash option that changes word
+  splitting, globbing or expansion, each marked *modelled worst-case*, *fixed
+  here*, or *out of scope* with its reason — is in the 1.0.0 RC phase-7
+  mission record (`kb/wiki/missions/2026-10-25-tess-os-rc-phase7-report.md`),
+  and this paragraph matches that table. Out of scope, with the reason: zsh
+  `BRACE_CCL` (`{ab}` expands to the words `a b`: a brace form Tess reads as
+  the literal `{ab}`, so a target it could spell is not checked — a real but
+  narrow gap, no protected path is a one-character brace set); zsh
+  `RC_EXPAND_PARAM` (rc-style array expansion: an array whose value Tess does
+  not know already falls to the run-time-value fail-safe, which asks). Covered
+  without a separate rule because they can only make the shell match FEWER
+  names or split LESS than the worst case already assumed: zsh `NOMATCH` /
+  `NO_NOMATCH`, `IGNORE_BRACES`, `KSH_GLOB`, `SH_GLOB` (its `(` forms already
+  ask), `NUMERIC_GLOB_SORT` and `MAGIC_EQUAL_SUBST`, `SH_WORD_SPLIT` (the
+  field model already splits unquoted expansions), and bash `failglob` (a
+  non-matching glob aborts the command, so it never writes), `globstar`
+  (`**` is already walked) and `globasciiranges` (bracket-range collation
+  only; bracket classes are already read as "any character"). Inside the project, a glob listing that only ran past the limits
   (1,000 names, 20,000 entries) is listed again with a larger budget (100,000
   names, 200,000 entries) when its fixed folder has no link on it and no step
   can climb out (`..`, or a step such as `.*` that can match `..`); names in
@@ -737,7 +765,17 @@ security reviews; they are stated so nobody relies on a check that is not there.
   whether or not you approve it, `tessctl run` counts as one agent although it
   may dispatch several (it always asks), and a payload without a session id
   (not something either runtime sends) is not counted. Subagents a workflow
-  tool starts outside these hooks are not seen.
+  tool starts outside these hooks are not seen. The gate's own task-start
+  handler (`tess-gate.py --task-start`), which starts each task's budget, is
+  refused on an agent's command line and, as a second check, marks a task only
+  when its input arrives the way the runtime sends a hook its input (on a pipe,
+  as a `UserPromptSubmit` payload), so an agent cannot reset its own budget
+  (a4113f7 review, item a). As with `tessctl run`, what the gate reads is the
+  command text: a run of the handler (or of an agent CLI) that an interpreter
+  builds at run time from text the command does not contain — a `python3 -c`
+  that assembles the flag from pieces, a program fed a script file or piped
+  input Tess cannot see — is out of scope; the gate asks whenever that text
+  is on the command line, but it cannot see code it does not hold.
 - **Optional OS file lock: `tessctl harden` (1.0.0, off by default).** `tessctl
   harden on`, run by you in your own terminal, sets the operating system's
   root-owned immutable flag on the files only Tess writes (`.claude/settings.json`,
@@ -759,7 +797,13 @@ security reviews; they are stated so nobody relies on a check that is not there.
   there). After such a rename the locked files are no longer where Tess runs
   them from; `tessctl anchor status` and `tessctl verify` still report the
   changed files, as they do without the lock. It is an operating-system
-  boundary under the gate and the anchor, which are unchanged. Only `harden on`
+  boundary under the gate and the anchor, which are unchanged. The root-level
+  `chflags`/`chattr` call never follows a symlink (a4113f7 review, item c):
+  macOS gets `chflags -h`, every path is re-checked with `lstat` right before
+  the call and skipped if a step is now a link, and after the call the locked
+  set's device/inode identities must equal the listed set, or the command
+  fails loudly — so a path swapped for a link between listing and call cannot
+  redirect the root call. Only `harden on`
   and `harden off` ever run sudo, and only at an interactive terminal outside
   Claude Code and Codex; the gate refuses both to agents, and refuses
   `chflags`/`chattr` on protected paths. `harden on` refuses while the anchor

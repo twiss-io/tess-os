@@ -4080,6 +4080,11 @@ class _Ctx:
         self.argv = parent.argv if parent is not None else None
         self.deferred = parent.deferred if parent is not None else False
         self.nonopt = set(parent.nonopt) if parent is not None else set()
+        # 1.0.0 (Cyra review of a4113f7, item e): variables whose value was
+        # globbed when it was assigned (zsh GLOB_ASSIGN, the worst case): an
+        # unquoted glob in NAME=value. Their value is read as a glob at use
+        # even when the use is quoted (_part_alts).
+        self.globvars = set(parent.globvars) if parent is not None else set()
         self.opaque = parent.opaque if parent is not None else False
         self.cond_now = parent.cond_now if parent is not None else False
         self.call_dirs = None
@@ -4106,6 +4111,11 @@ class _Ctx:
             self.nonopt.add(name)
         else:
             self.nonopt.discard(name)
+        if getattr(self, "_assign_globbed", False):
+            self.globvars.add(name)
+        else:
+            self.globvars.discard(name)
+        self._assign_globbed = False  # one-shot: set right before each assign()
 
 
 def _writer_name(low: str) -> str | None:
@@ -4372,6 +4382,15 @@ def _val_chunk(x: str, quoted: bool, assign: bool) -> tuple:
     return (x, x, bool(_GLOB_WORST.search(x)), True)
 
 
+def _value_has_unquoted_glob(word) -> bool:
+    """True when `word` (an assignment value) holds an unquoted glob character
+    (worst case: zsh GLOB_ASSIGN globs it when it is assigned)."""
+    if not isinstance(word, _Word) or not word.parts:
+        return bool(_GLOB_WORST.search(str(word)))
+    return any(k in ("raw", "fallback") and not _part_quoted(word, n) and _GLOB_WORST.search(t)
+               for n, (k, t) in enumerate(word.parts))
+
+
 def _part_alts(kind: str, t: str, quoted: bool, first: bool, cwd, ctx: "_Ctx", assign: bool):
     """What one part of a word can become: a list of alternatives, each a list
     of chunks (text, glob pattern, has glob, split by IFS), with None between
@@ -4391,7 +4410,10 @@ def _part_alts(kind: str, t: str, quoted: bool, first: bool, cwd, ctx: "_Ctx", a
         vals = _var_values(t, cwd, ctx) if kind == "var" else _sub_values(t, cwd)
         if vals is None:
             return None
-        return [[_val_chunk(x, quoted, assign)] for x in dict.fromkeys(vals)]
+        # 1.0.0 (item e): a glob-assigned variable (GLOB_ASSIGN) is a glob at
+        # use even quoted; reading it unquoted is the worst case of its names.
+        q = quoted and not (kind == "var" and t in getattr(ctx, "globvars", ()))
+        return [[_val_chunk(x, q, assign)] for x in dict.fromkeys(vals)]
     if kind == "dyn" and ctx.argv is not None and t in ("@", "*", "#"):
         if t == "#":
             return [[(str(len(ctx.argv)), str(len(ctx.argv)), False, False)]]
@@ -4406,9 +4428,23 @@ def _part_alts(kind: str, t: str, quoted: bool, first: bool, cwd, ctx: "_Ctx", a
     return None
 
 
+# 1.0.0 (automated review of a4113f7, item b): an unquoted value is read as a
+# glob under the worst case (zsh GLOB_SUBST), but `(` (alternatives, ksh-style
+# patterns, glob qualifiers that can run code), `|` and zsh's `<N-M>` are not
+# in that model. The raw words ask for them (_PAREN_ASK, _ZSH_RANGE_ASK); in
+# an expanded value they make the field unreadable (_split_fields returns
+# None: only known at run time) and the command asks (_check_value_patterns).
+_VAL_UNREAD = re.compile(r"[(|]|<\d*-\d*>")
+_VAL_PATTERN_ASK = ("an unquoted variable or command substitution holds `(`, `|` or `<N-M>`; with "
+                    "zsh's GLOB_SUBST that value is a file-name pattern Tess does not read "
+                    "(alternatives, glob qualifiers that can run code, a number range), so Tess "
+                    "cannot tell which files it names; quote it")
+
+
 def _split_fields(chunks: list, ifs) -> list | None:
     """Field splitting (unquoted expansions only), then the glob pattern of
-    each field: [(text, pattern or None), ...]; None when IFS is unknown."""
+    each field: [(text, pattern or None), ...]; None when IFS is unknown, or
+    when an unquoted value holds a pattern Tess does not read (_VAL_UNREAD)."""
     fields, cur = [], None
     for ch in chunks:
         _tick()  # E8: budget check per iteration
@@ -4418,6 +4454,8 @@ def _split_fields(chunks: list, ifs) -> list | None:
             cur = None
             continue
         text, pat, glob, split = ch
+        if split and _VAL_UNREAD.search(text):
+            return None  # automated review of a4113f7, item b
         if not split:
             cur = cur or ["", "", False]
             cur[0], cur[1], cur[2] = cur[0] + text, cur[1] + pat, cur[2] or glob
@@ -5438,6 +5476,46 @@ def _output_targets(name: str, args: list) -> list:
                     rest = w[w.index("f") + 1:]
                     out.append(_plain(rest) if rest else (args[i + 1] if i + 1 < len(args) else _plain("")))
     return out
+
+
+# 1.0.0 (Cyra review of a4113f7, item d): the write-target binding reads an
+# argument list by position, but under NULL_GLOB / CSH_NULL_GLOB (zsh) and
+# nullglob (bash) a glob that matches nothing is removed before the program
+# runs, so a later word slides into an option-argument or trailing-operand
+# slot (`curl -o <no-match> PROT` runs `curl -o PROT`). The checks are run
+# for the argument list AND for every list a set of possibly-vanishing glob
+# words could leave behind (_NULLGLOB_CAP caps the subsets; past it, ask).
+_NULLGLOB_CAP = 6
+_NULLGLOB_ASK = ("the command has several globs that can match nothing; with nullglob those words "
+                 "vanish and move the others into write-target positions, more ways than Tess "
+                 "checks one by one, so it cannot tell what it writes; quote them or run fewer")
+
+
+def _vanishable(word) -> bool:
+    """True when the shell may drop `word` entirely (an unquoted glob that
+    matches nothing, under nullglob / csh_null_glob): then the words after it
+    shift one position left."""
+    return _globbed(word) and not (isinstance(word, _Word) and (word.op or word.fd))
+
+
+def _write_targets_wc(argv: list, orig: list | None = None) -> tuple:
+    """(write-target words, too many) under the worst case of the null-glob
+    options (item d): the targets of `argv`, plus those of `argv` with each
+    subset of its vanishable glob words removed. `too many` when there are
+    more such words than _NULLGLOB_CAP; the caller then asks."""
+    import itertools
+    out = list(_write_targets(argv, orig))
+    van = [i for i in range(1, len(argv)) if _vanishable(argv[i])]
+    if not van:
+        return out, False
+    if len(van) > _NULLGLOB_CAP:
+        return out, True
+    for r in range(1, len(van) + 1):
+        for combo in itertools.combinations(van, r):
+            _tick()  # E8: budget check per iteration
+            drop = set(combo)
+            out += _write_targets([a for j, a in enumerate(argv) if j not in drop], orig)
+    return out, False
 
 
 def _write_targets(argv: list, orig: list | None = None) -> list:
@@ -6962,13 +7040,132 @@ def _brain_names(text: str) -> list:
 
 def _hook_only_handlers() -> tuple:
     """The handlers only a runtime may run, as a hook (see above): (rule tag,
-    script names, test on (words, index of the script), refusal)."""
+    script names, test on (words, index of the script), refusal, the word that
+    selects the handler, the positions after the script where it may stand)."""
     return (
         ("brainhook", _BRAIN_SCRIPTS,
-         lambda words, i: (_brain_cli_sub(words, i)[0] or "").lower() == "hook", _BRAIN_HOOK_DENY),
+         lambda words, i: (_brain_cli_sub(words, i)[0] or "").lower() == "hook", _BRAIN_HOOK_DENY,
+         "hook", _brain_sub_slots),
         ("taskstart", _GATE_SCRIPTS, lambda words, i: "--task-start" in words[i + 1:],
-         _TASK_START_DENY),
+         _TASK_START_DENY, "--task-start", lambda words, i: range(i + 1, len(words))),
     )
+
+
+# 1.0.0 (automated review of a4113f7, item a): the rule above matched the
+# literal text after a script name, so a word whose value is only known when
+# the shell runs it (a glob, a variable, a command substitution, a brace, a
+# tilde, zsh `=cmd`, a `{}` that find or xargs fill in) could stand for the
+# handler's selector without the gate seeing it. Policy: after a word that
+# names, or can expand to, one of these scripts,
+#   * a word that can expand to the selector (`--task-start`, `hook`) is
+#     refused, as the literal is: a glob is matched under the worst case of
+#     the shell options (dot names, EXTENDED_GLOB, case-blind), a variable or
+#     substitution by every value Tess can know for it;
+#   * any other word that is not a plain literal asks (Codex: refuses), and so
+#     does a run of the script by xargs, which adds words Tess cannot see;
+#   * a program that only reads or prints its words (_BRAIN_TEXT_ONLY) cannot
+#     run the handler, and keeps the literal rule only.
+# A word naming the script through a pattern (`tess-gat?.py`, `*.py`) counts
+# as the script. The handlers also check, at run time, that their input came
+# the way the runtime sends it (task_start: _task_start_refusal).
+_NONPLAIN_RAW = re.compile(r"[*?\[{^~#(|]")
+
+
+def _plain_literal(word) -> bool:
+    """`word` is the same text whatever the shell's options and state: no
+    expansion, no wildcard (worst case: zsh EXTENDED_GLOB), no brace, no
+    tilde, no zsh `=cmd` or `<N-M>`, and no `{}` that find or xargs fill in.
+    A _Field is a value the gate expanded from such a word: never plain."""
+    if "{}" in str(word) or isinstance(word, _Field):
+        return False
+    if not isinstance(word, _Word) or not word.parts:
+        return not re.search(r"[$`*?\[{^~#(|<]", str(word)) and not str(word).startswith("=")
+    if getattr(word, "zsh_range", False):
+        return False
+    for n, (k, t) in enumerate(word.parts):
+        _tick()  # E8: budget check per iteration
+        if k == "lit" or (k == "raw" and not _NONPLAIN_RAW.search(t) and not (n == 0 and t.startswith("="))):
+            continue
+        return False
+    return True
+
+
+def _word_readings(word, cwd, ctx) -> "list | None":
+    """[(text, glob pattern or None), ...] that a word that is not a plain
+    literal can become; None when part of it is only known at run time."""
+    if "{}" in str(word):
+        return None
+    if isinstance(word, _Word) and not isinstance(word, _Field) and word.parts and any(
+            k == "raw" and n == 0 and t.startswith("=") for n, (k, t) in enumerate(word.parts)):
+        return None  # zsh `=cmd` is the path of a program
+    vals, _prefix = _word_values(word, cwd, ctx)
+    return vals
+
+
+def _reading_may_be(vals: list, wants, base: bool = False) -> bool:
+    """True when one of `vals` (from _word_readings) can be one of `wants`:
+    the text itself, or a name its glob pattern matches (case-blind too, the
+    worst case of nocaseglob); `base`: compare the last path step only."""
+    for text, pat in vals:
+        _tick()  # E8: budget check per iteration
+        if pat is None:
+            t = os.path.basename(text) if base else text
+            if any(t == w or t.lower() == w for w in wants):
+                return True
+            continue
+        p = pat.rsplit("/", 1)[-1] if base else pat
+        if any(fnmatch.fnmatchcase(w, p) or fnmatch.fnmatchcase(w, p.lower()) for w in wants):
+            return True
+    return False
+
+
+def _brain_sub_slots(words: list, i: int):
+    """Positions after the brain script at words[i] where its subcommand may
+    stand: every word up to and including the first literal non-option."""
+    sub, j = _brain_cli_sub(words, i)
+    return range(i + 1, (j + 1) if j is not None else len(words))
+
+
+_HOOK_ONLY_ASK = ("a word after {script} is only known when the command runs ({word}), so Tess "
+                  "cannot show it does not run a handler only the runtime may run (the brain's "
+                  "hook handler, or the gate's task-start handler)")
+
+
+def _check_hook_only(cwd, ctx, argv: list, words: list, name: str, env: dict, via_xargs: bool,
+                     v: "Verdict") -> None:
+    """Step (2) of _check_brain_surface: see the block comments above."""
+    text_only = name in _BRAIN_TEXT_ONLY and not env
+    for i, w in enumerate(argv):
+        _tick()  # E8: budget check per iteration
+        base = os.path.basename(words[i]).lower()
+        plain = _plain_literal(w)
+        vals = None if plain else _word_readings(w, cwd, ctx)
+        for tag, scripts, runs_it, why, selector, slots in _hook_only_handlers():
+            _tick()  # E8: budget check per iteration
+            if not (base in scripts or (not text_only and vals is not None
+                                        and _reading_may_be(vals, scripts, True))):
+                continue
+            if runs_it(words, i):
+                v.add(DENY, why, tag)
+                continue
+            if text_only:
+                continue
+            unknown = []
+            for j in slots(words, i):
+                _tick()  # E8: budget check per iteration
+                if _plain_literal(argv[j]):
+                    continue
+                got = _word_readings(argv[j], cwd, ctx)
+                if got is not None and _reading_may_be(got, (selector,)):
+                    v.add(DENY, why, tag)
+                    break
+                unknown.append(words[j])
+            else:
+                if via_xargs and i == len(argv) - 1:
+                    unknown.append("the words xargs adds")
+                if unknown:
+                    v.add(ASK, _HOOK_ONLY_ASK.format(script=os.path.basename(words[i]),
+                                                     word=unknown[0][:60]))
 
 
 def _brain_store_text(cmd: str) -> list:
@@ -6989,7 +7186,7 @@ def _brain_cli_ok(root: Path, cwd, argv: list, words: list, name: str) -> bool:
     launcher; a literal subcommand other than `hook`; nothing after it only
     known at run time. Anything else is read as text (_check_brain_surface)."""
     def own(w):
-        if os.path.basename(w).lower() not in _BRAIN_SCRIPTS or _dynamic(w) or _expands(w):
+        if os.path.basename(w).lower() not in _BRAIN_SCRIPTS or not _plain_literal(w):
             return False
         real = os.path.realpath(os.path.join(cwd or str(root), w))
         return os.path.dirname(real) == os.path.realpath(str(root / "scripts" / "brain"))
@@ -7019,11 +7216,14 @@ def _brain_cli_ok(root: Path, cwd, argv: list, words: list, name: str) -> bool:
     sub, j = _brain_cli_sub(words, i)
     if sub is None or sub.lower() == "hook":
         return False
-    return not any(_dynamic(a) or _expands(a) for a in argv[i + 1:])
+    # 1.0.0 (automated review of a4113f7, item a): a glob, brace, tilde or
+    # `{}` after the script is not a plain literal either
+    return all(_plain_literal(a) for a in argv[i + 1:])
 
 
 def _check_brain_surface(root: Path, cwd, env: dict, argv: list, orig, name: str, raw: str,
-                         upstream, v: Verdict) -> None:
+                         upstream, v: Verdict, ctx: "_Ctx | None" = None,
+                         via_xargs: bool = False) -> None:
     """1.0.x (Cyra B-1, B-2): see the block comment above. Every exemption
     here covers the whole segment: its environment prefix, every word, its
     here-document or here-string and the text piped into it."""
@@ -7039,14 +7239,10 @@ def _check_brain_surface(root: Path, cwd, env: dict, argv: list, orig, name: str
                     "transcript folder would let the agent choose which conversations the brain "
                     "records as yours", "brainstore")
     # (2) a hook-only handler named as a word, under any program: the brain's
-    # hook handler, and (Cyra f8, item c) the gate's task-start handler
-    for i, w in enumerate(words):
-        _tick()
-        base = os.path.basename(w).lower()
-        for tag, scripts, runs_it, why in _hook_only_handlers():
-            _tick()
-            if base in scripts and runs_it(words, i):
-                v.add(DENY, why, tag)
+    # hook handler, and (Cyra f8, item c) the gate's task-start handler; a
+    # word only known at run time (automated review of a4113f7, item a)
+    _check_hook_only(cwd, ctx if ctx is not None else _Ctx(raw), argv, words, name, env,
+                     via_xargs, v)
     if not env and _brain_cli_ok(root, cwd, argv, words, name):
         return
     # (3) everything this segment is handed, read as text, whatever the program
@@ -9153,6 +9349,51 @@ def _check_tessctl_run(env: dict, words: list, v: Verdict, ctx: "_Ctx", res: "_C
                "permissions, one per crew-plan task and verifier")
 
 
+_DECLARERS = {"export", "local", "declare", "typeset", "readonly"}
+
+
+def _value_pattern(word, cwd, ctx: "_Ctx") -> bool:
+    """True when an unquoted variable, command substitution or "$@" in `word`
+    has a value Tess knows that holds `(`, `|` or `<N-M>` (see _VAL_UNREAD)."""
+    if not isinstance(word, _Word) or isinstance(word, _Field) or word.op or not word.parts:
+        return False
+    for n, (k, t) in enumerate(word.parts):
+        _tick()  # E8: budget check per iteration
+        if _part_quoted(word, n):
+            continue
+        if k == "var":
+            vals = _var_values(t, cwd, ctx)
+        elif k == "sub":
+            vals = _sub_values(t, cwd)
+        elif k == "dyn" and t in ("@", "*") and ctx.argv is not None:
+            vals = ctx.argv
+        else:
+            continue
+        if vals and any(_VAL_UNREAD.search(str(x)) for x in vals):
+            return True
+    return False
+
+
+def _check_value_patterns(orig: list, cwd, ctx: "_Ctx", v: Verdict) -> None:
+    """Item b (see _VAL_UNREAD): the ASK the raw words get, for a value. An
+    assignment (`X=$Y`, `export X=$Y`) is neither split nor globbed."""
+    lead, declarer = True, False
+    for w in orig:
+        _tick()  # E8: budget check per iteration
+        s = str(w)
+        named = bool(re.match(r"^[A-Za-z_]\w*\+?=", s))
+        if lead and named:
+            continue
+        if lead:
+            lead, declarer = False, os.path.basename(s) in _DECLARERS
+            continue
+        if declarer and named:
+            continue
+        if _value_pattern(w, cwd, ctx):
+            v.add(ASK, _VAL_PATTERN_ASK)
+            return
+
+
 def _check_segment(root: Path, cwd: str | None, argv: list, v: Verdict, raw: str, depth: int,
                    ctx: "_Ctx | None" = None, upstream=None):
     ctx = ctx if ctx is not None else _Ctx(raw)
@@ -9168,7 +9409,7 @@ def _check_segment(root: Path, cwd: str | None, argv: list, v: Verdict, raw: str
     if res.chdir is not None and cwd is not None:
         cands, _ = _word_values(res.chdir, cwd, ctx)
         cwd = os.path.normpath(os.path.join(cwd, cands[0][0])) if cands and len(cands) == 1 else None
-    targets = _write_targets(argv, orig)
+    targets, _van_many = _write_targets_wc(argv, orig)
     if cwd is None:
         # a `cd` earlier in this command (or the tool's working directory) went
         # somewhere Tess cannot resolve
@@ -9179,6 +9420,7 @@ def _check_segment(root: Path, cwd: str | None, argv: list, v: Verdict, raw: str
     for w in orig:  # command and process substitutions run first, in this directory
         _tick()  # E8: budget check per iteration
         _check_subs(root, cwd, w, v, depth, ctx)
+    _check_value_patterns(orig, cwd, ctx, v)
     for text in res.inner:
         _tick()  # E8: budget check per iteration
         _recurse(root, cwd, text, v, depth, ctx, env)
@@ -9217,7 +9459,10 @@ def _check_program(root: Path, cwd: str, env: dict, argv: list, orig: list, v: V
     name = os.path.basename(str(argv[0])).lower()
     if any("\0" in str(a) for a in list(argv) + list(orig or [])):
         v.add(ASK, _NUL_ASK)
-    _check_targets(root, cwd, _write_targets(argv, []), v, ctx)
+    tgts, van_many = _write_targets_wc(argv, [])
+    if van_many:
+        v.add(ASK, _NULLGLOB_ASK)
+    _check_targets(root, cwd, tgts, v, ctx)
     _check_unknown_args(name, argv, v, ctx)
     agent = _agent_name(name)
     if agent:
@@ -9227,7 +9472,7 @@ def _check_program(root: Path, cwd: str, env: dict, argv: list, orig: list, v: V
         if what:
             v.add(ASK, _INTERACTIVE_ASK.format(what=what))
     _check_home_env(env, argv, raw, v)
-    _check_brain_surface(root, cwd, env, argv, orig, name, raw, upstream, v)
+    _check_brain_surface(root, cwd, env, argv, orig, name, raw, upstream, v, ctx, res.via_xargs)
     copier = name if name == "ditto" else _writer_name(name)
     if copier in _COPY_INTO:
         _check_copy_into(root, cwd, copier, argv, v, ctx, res.via_xargs)
@@ -10179,6 +10424,9 @@ def _track_vars(orig: list, res: "_Cmd", cwd: str | None, ctx: "_Ctx", cond: boo
         _tick()  # E8: budget check per iteration
         m = _ASSIGN.match(str(w))
         n, value = m.group(1), _sub_word(w, m.end())
+        # item e: an unquoted glob in the value means zsh GLOB_ASSIGN expands
+        # it when it is assigned; mark the variable so its use is a glob too.
+        ctx._assign_globbed = _value_has_unquoted_glob(value)
         cands, _ = _word_values(value, cwd, ctx, assign=True)
         vals = None if cands is None else [t for t, _p in cands]
         if m.group(2) and vals is not None:  # NAME+=value appends
@@ -10635,13 +10883,41 @@ _ERRORED = ("TESS GATE: blocked because the safety check errored ({}). "
             "Check `./tessctl doctor`; if it keeps failing, run the command yourself.")
 
 
+# 1.0.0 (automated review of a4113f7, item a, defence in depth): the
+# task-start handler also checks that its input came the way Claude Code
+# sends a UserPromptSubmit hook its input: on a pipe (an agent's Bash tool
+# command gets /dev/null as its input), as a JSON object naming that event,
+# with the prompt and the session. An agent that writes a pipe itself can
+# still forge this; the boundary is the gate's refusal of the handler on an
+# agent's command line (_check_hook_only). Claude Code sets CLAUDECODE=1 for
+# its hooks as well as for the agent's shell, so that is no signal. A
+# refused mark only keeps the current count (stricter), never blocks.
+def _task_start_refusal() -> "tuple[str, dict | None]":
+    """('', payload) when the task-start input came as the runtime sends it;
+    (why not, None) otherwise. Reads stdin only when it is a pipe."""
+    try:
+        mode = os.fstat(sys.stdin.fileno()).st_mode
+    except (OSError, ValueError, AttributeError):
+        return "its input could not be checked", None
+    if not (stat.S_ISFIFO(mode) or stat.S_ISSOCK(mode)):
+        return "its input did not arrive on a pipe, as the runtime sends a hook its input", None
+    data = json.loads(sys.stdin.read())
+    if not isinstance(data, dict) or data.get("hook_event_name") != "UserPromptSubmit":
+        return "its input is not a UserPromptSubmit hook payload", None
+    if not isinstance(data.get("prompt"), str) or not isinstance(data.get("session_id"), str):
+        return "its input has no prompt or no session", None
+    return "", data
+
+
 def main(argv: list) -> int:
     if "--task-start" in argv:
         # 1.0.0: UserPromptSubmit marks a new task (fresh agent budget). It
         # prints nothing and never blocks the prompt.
         try:
-            data = json.loads(sys.stdin.read())
-            if isinstance(data, dict):
+            why, data = _task_start_refusal()
+            if why:
+                sys.stderr.write(f"tess-gate: no new task marked: {why}\n")
+            else:
                 task_start(data)
         except Exception as exc:  # noqa: BLE001 -- a missed mark only makes counting stricter
             sys.stderr.write(f"tess-gate: could not mark a new task ({type(exc).__name__})\n")

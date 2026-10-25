@@ -25,12 +25,17 @@ user config):
   * Each command gets a fresh copy of the pristine sandbox, a timeout, and its
     own process group, which is the only thing ever signalled.
 
-1.0.0 (Cyra f8 review, item a): Claude Code runs an agent's commands with the
-operator's own shell options, so every shell also runs with the options that
-make globs match the most: zsh with GLOB_DOTS and EXTENDED_GLOB, bash with
-dotglob and extglob (and globstar where the bash has it). Such a run is named
-`<shell>+worst` (WORST_SUFFIX).
-"""
+1.0.0 (Cyra f8 review, item a; a4113f7 review, items d, e, g): Claude Code
+runs an agent's commands with the operator's own shell options, which Tess
+cannot see, so every shell also runs under extra option profiles:
+  * `+worst` — every modelled match-broadening option at once: zsh GLOB_DOTS,
+    EXTENDED_GLOB, GLOB_SUBST, GLOB_ASSIGN and NO_CASE_GLOB; bash dotglob,
+    extglob, nocaseglob and globstar (where the bash has it).
+  * `+nullglob` — the word-removal option on its own (zsh NULL_GLOB, bash
+    nullglob), with the match-broadening options OFF so a decoy glob reliably
+    matches nothing and vanishes (item d). It is a separate profile because
+    the broadening options would make the decoy match and hide the shift.
+Each profile is named `<shell>+<profile>` (see PROFILES / profile_argv)."""
 
 from __future__ import annotations
 
@@ -477,6 +482,15 @@ def _jailed(argv: list, base: str) -> list:
 
 
 WORST_SUFFIX = "+worst"
+NULLGLOB_SUFFIX = "+nullglob"
+PROFILES = ("", WORST_SUFFIX, NULLGLOB_SUFFIX)
+# Per profile: zsh `setopt` names, and bash `shopt -s` names. globstar is
+# added for bash only where the bash supports it (checked at run time).
+_PROFILE_OPTS = {
+    WORST_SUFFIX: (("globdots", "extendedglob", "globsubst", "globassign", "nocaseglob"),
+                   ("dotglob", "extglob", "nocaseglob")),
+    NULLGLOB_SUFFIX: (("nullglob",), ("nullglob",)),
+}
 _GLOBSTAR: dict = {}
 
 
@@ -491,20 +505,31 @@ def plain_shells() -> list:
 
 def shells() -> list:
     """Every shell run: each bash and zsh with its default options, then each
-    again with the worst-case glob options (`<shell>+worst`, see above)."""
+    again under every option profile (`<shell>+worst`, `<shell>+nullglob`)."""
     plain = plain_shells()
-    return plain + [sh + WORST_SUFFIX for sh in plain]
+    return plain + [sh + suf for suf in PROFILES if suf for sh in plain]
+
+
+def _profile_of(shell: str) -> tuple:
+    for suf in PROFILES:
+        if suf and shell.endswith(suf):
+            return shell[:-len(suf)], suf
+    return shell, ""
 
 
 def shell_argv(shell: str) -> list:
     """The program and flags of one shell run (no startup files)."""
-    worst = shell.endswith(WORST_SUFFIX)
-    prog = shell[:-len(WORST_SUFFIX)] if worst else shell
+    prog, suf = _profile_of(shell)
+    zopts, bopts = _PROFILE_OPTS.get(suf, ((), ()))
     if "zsh" in os.path.basename(prog):
-        return [prog, "-f"] + (["-o", "globdots", "-o", "extendedglob"] if worst else [])
+        flags = []
+        for o in zopts:
+            flags += ["-o", o]
+        return [prog, "-f"] + flags
     flags = ["--noprofile", "--norc"]
-    if worst:
-        flags += ["-O", "dotglob", "-O", "extglob"]
+    for o in bopts:
+        flags += ["-O", o]
+    if suf == WORST_SUFFIX:
         if prog not in _GLOBSTAR:  # bash 3.2 (macOS) has no globstar
             _GLOBSTAR[prog] = subprocess.run([prog, "--noprofile", "--norc", "-O", "globstar", "-c", "true"],
                                              stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,

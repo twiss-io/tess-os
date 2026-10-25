@@ -21472,6 +21472,17 @@ def _anchor_show_changes(root: Path, st: AnchorState) -> None:
 #     repository's git config (git writes it), .mcp.json (the operator edits it).
 #   * Undo: `tessctl harden off` (files and folders); by hand, `sudo chflags
 #     -R noschg <project>` (macOS) or `sudo chattr -R -i <project>` (Linux).
+#   * Links are never followed by the root-level call (1.0.0, automated
+#     review of a4113f7, item c). The list records each path's identity
+#     (device and inode) when it is made. Right before each sudo call, every
+#     step of every path is checked again with lstat: a step that is now a
+#     symlink, or a path that is no longer the one listed, stops the run
+#     before sudo runs. macOS gets `chflags -h`, which acts on a link itself;
+#     Linux `chattr` has no such switch, so there the re-check is what keeps
+#     it off links. After the call, the identities of the locked (or
+#     unlocked) set must equal the listed set, or the command fails loudly.
+#     What remains: a path swapped in the moment between the re-check and the
+#     call; the identity check afterwards reports it.
 # Limits (SECURITY.md): anything that can run sudo without a password (a
 # cached sudo session, a NOPASSWD rule) can clear the flag; new files can
 # still appear beside locked ones; git operations that rewrite a locked file
@@ -21549,13 +21560,58 @@ def _harden_flag(path: Path) -> "bool | None":
     return None
 
 
+def _harden_ident(path: Path) -> "tuple | None":
+    """(device, inode) of `path` itself (never a link's target); None when it
+    is gone or is a symlink."""
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return None
+    return None if stat.S_ISLNK(st.st_mode) else (st.st_dev, st.st_ino)
+
+
 def _harden_state(root: Path) -> dict:
-    """{"locked": [...], "open": [...], "unknown": [...]} over _harden_paths."""
-    st = {"locked": [], "open": [], "unknown": []}
+    """{"locked": [...], "open": [...], "unknown": [...], "ids": {rel: (dev,
+    ino)}} over _harden_paths; "ids" is each path's identity when listed."""
+    st = {"locked": [], "open": [], "unknown": [], "ids": {}}
     for rel in _harden_paths(root):
+        st["ids"][rel] = _harden_ident(root / rel)
         f = _harden_flag(root / rel)
         st["locked" if f else "open" if f is False else "unknown"].append(rel)
     return st
+
+
+def _harden_recheck(root: Path, rels: list, ids: dict) -> list:
+    """Right before a sudo call: the paths in `rels` that changed since they
+    were listed: a step of the path (below the project) that is now a
+    symlink, or a path that is gone or is no longer the listed file or folder."""
+    bad = []
+    for rel in rels:
+        p, ok = root, True
+        for part in Path(rel).parts:
+            p = p / part
+            try:
+                if stat.S_ISLNK(os.lstat(p).st_mode):
+                    ok = False
+                    break
+            except OSError:
+                ok = False
+                break
+        if not ok or ids.get(rel) is None or _harden_ident(root / rel) != ids.get(rel):
+            bad.append(rel)
+    return bad
+
+
+def _harden_argv(argv: list, files: list) -> list:
+    """The command line for `files` (absolute paths). macOS: `chflags -h --
+    <flag> <files>`: `-h` acts on a link itself, never its target, and the
+    options end before the flag operand (BSD chflags reads a `--` after the
+    flag as a file name, so `chflags schg -- <files>` failed on a file named
+    `--` and exited 1). Linux: `chattr <+i|-i> -- <files>`; chattr has no
+    switch for links (see _harden_recheck)."""
+    if argv and argv[0] == "chflags":
+        return [argv[0], "-h", "--"] + list(argv[1:]) + list(files)
+    return list(argv) + ["--"] + list(files)
 
 
 def _harden_tool() -> "tuple | None":
@@ -21568,14 +21624,27 @@ def _harden_tool() -> "tuple | None":
     return None
 
 
-def _harden_run_sudo(root: Path, argv: list, rels: list) -> int:
+def _harden_run_sudo(root: Path, argv: list, rels: list, ids: "dict | None" = None) -> int:
     """Run `sudo <argv> -- <files>` in batches, attached to the operator's
     terminal so sudo asks for the password there. Only `harden on|off` call
-    this, after the presence check."""
+    this, after the presence check. Links are never followed (see the
+    OPT-IN FILE LOCK block): each batch is re-checked against the listed
+    identities `ids` right before its call, and a changed path stops the run
+    before sudo runs."""
+    if ids is None:
+        sys.exit("tessctl harden: REFUSED — no listed identities to check the paths against. "
+                 "Nothing was changed.")
     rc = 0
     for i in range(0, len(rels), 200):
-        files = [str(root / r) for r in rels[i:i + 200]]
-        rc = subprocess.run(["sudo", "--"] + argv + ["--"] + files, cwd=str(root)).returncode or rc
+        batch = rels[i:i + 200]
+        bad = _harden_recheck(root, batch, ids)
+        if bad:
+            sys.exit(f"tessctl harden: STOPPED — {len(bad)} path(s) changed after they were listed "
+                     f"(for example {bad[0]}: now a symlink, gone, or another file or folder), so "
+                     f"sudo was not run on them. Something may be replacing Tess's files: run "
+                     f"`tessctl verify` and `tessctl harden status`.")
+        files = [str(root / r) for r in batch]
+        rc = subprocess.run(["sudo", "--"] + _harden_argv(argv, files), cwd=str(root)).returncode or rc
         if rc:
             break
     return rc
@@ -21601,7 +21670,7 @@ def cmd_harden(args, root: Path) -> None:
     sub = getattr(args, "harden_sub", None) or "status"
     tool = _harden_tool()
     st = _harden_state(root)
-    total = sum(len(v) for v in st.values())
+    total = len(st["locked"]) + len(st["open"]) + len(st["unknown"])
     if sub == "status":
         if tool is None:
             print("harden: not available on this system (macOS and Linux only); nothing is locked")
@@ -21657,7 +21726,7 @@ def cmd_harden(args, root: Path) -> None:
                 "write, so they stay unlocked; renaming one of them and putting a new copy in its "
                 "place is not stopped by the lock (the anchor and `tessctl verify` still report it).",
                 "  Undo at any time: `tessctl harden off`."))
-        rc = _harden_run_sudo(root, tool[0], todo)
+        rc = _harden_run_sudo(root, tool[0], todo, st["ids"])
     else:
         todo = st["locked"]
         if not todo:
@@ -21668,9 +21737,16 @@ def cmd_harden(args, root: Path) -> None:
             HARDEN_UNLOCK_CONFIRM, prompt="unlock> ", lines=(
                 f"  This runs `sudo {' '.join(tool[1])}` on {len(todo)} files and folders (sudo asks for your "
                 "password).",))
-        rc = _harden_run_sudo(root, tool[1], todo)
+        rc = _harden_run_sudo(root, tool[1], todo, st["ids"])
     after = _harden_state(root)
     want = "locked" if sub == "on" else "open"
+    # the set acted on must be the set listed, file for file (item c)
+    moved = [r for r in todo if after["ids"].get(r) is None or after["ids"].get(r) != st["ids"].get(r)]
+    if moved:
+        sys.exit(f"tessctl harden {sub}: FAILED — {len(moved)} path(s) are not the files or folders "
+                 f"that were listed (for example {moved[0]}): something replaced or moved them while "
+                 f"they were being {'locked' if sub == 'on' else 'unlocked'}. Run `tessctl verify` "
+                 f"and `tessctl harden status`, and check what else runs as you.")
     bad = [r for r in todo if r not in after[want]]
     if rc or bad:
         sys.exit(f"tessctl harden {sub}: did not finish — {len(bad)} file(s) or folder(s) are not "

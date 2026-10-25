@@ -157,6 +157,42 @@ def test_worst_case_shells_match_dot_names_and_extended_globs(gate_env):
     sc._rmtree(work / "worstcheck")
 
 
+def test_nullglob_profile_removes_a_non_matching_glob(gate_env):
+    """1.0.0 (a4113f7 review, item d): the +nullglob profile really drops a
+    glob that matches nothing, so the harness exercises the word-shift the
+    gate must account for; the broadening options stay off."""
+    _gate, pristine, work = gate_env
+    null = [sh for sh in sc.shells() if sh.endswith(sc.NULLGLOB_SUFFIX)]
+    assert {os.path.basename(sh[:-len(sc.NULLGLOB_SUFFIX)]) for sh in null} >= {"bash", "zsh"}
+    for sh in null:
+        s = sc.fresh_copy(pristine, work / "nullcheck")
+        d = Path(s["T"]) / "n"
+        d.mkdir()
+        # `touch pre *.none post`: with nullglob, *.none vanishes -> `touch pre post`
+        code, err = sc.run_shell(sh, f"cd '{d}' && touch pre *.none post", s)
+        assert code == 0, (sh, err)
+        assert (d / "pre").exists() and (d / "post").exists(), sh
+        assert not (d / "*.none").exists(), sh    # the literal was not created: it vanished
+    sc._rmtree(work / "nullcheck")
+
+
+def test_worst_profile_globs_an_unquoted_value_in_zsh(gate_env):
+    """item e / GLOB_SUBST: under +worst, zsh reads an unquoted variable value
+    as a glob pattern."""
+    _gate, pristine, work = gate_env
+    zworst = [sh for sh in sc.shells() if sh.endswith(sc.WORST_SUFFIX)
+              and "zsh" in os.path.basename(sh)]
+    for sh in zworst:
+        s = sc.fresh_copy(pristine, work / "substcheck")
+        d = Path(s["T"]) / "s"
+        d.mkdir()
+        (d / "hit").write_text("x")
+        code, err = sc.run_shell(sh, f"cd '{d}' && p='h*t'; for f in $p; do touch \"$f.seen\"; done", s)
+        assert code == 0, (sh, err)
+        assert (d / "hit.seen").exists(), sh      # the value h*t matched `hit`
+    sc._rmtree(work / "substcheck")
+
+
 def test_attack_and_everyday_corpus_conforms(gate_env):
     gate, pristine, work = gate_env
     cases = json.loads(CORPUS.read_text(encoding="utf-8"))["cases"]
