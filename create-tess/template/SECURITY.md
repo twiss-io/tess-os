@@ -393,7 +393,8 @@ security reviews; they are stated so nobody relies on a check that is not there.
   +` form. **Shell options Tess cannot see (1.0.0, f8 review).** Claude Code
   runs an agent's commands with your own shell options (for zsh, what your
   startup files set), and Tess cannot read them, so wherever a glob may reach a
-  protected path, a control file or the key folder, it is read under the worst
+  protected path, a control file or the key folder (for the key folder also a
+  word that mixes `^`, `~` or `#` with `*`, `?` or `[`, a769130 review), it is read under the worst
   case: a glob step matches a name that starts with a dot (zsh `GLOB_DOTS`,
   bash `dotglob`; never `.` or `..`), and `**` and `***` walk into dot folders;
   an unquoted `^`, `~` or `#` inside a word is a wildcard (zsh
@@ -414,33 +415,58 @@ security reviews; they are stated so nobody relies on a check that is not there.
   (bash always; zsh with `GLOB_SUBST`), with the same worst case, and `(`, `|`
   or zsh's `<N-M>` inside such a value asks, as the raw words do (a4113f7
   review, item b). A glob that matches nothing is removed by the shell under
-  zsh `NULL_GLOB` / `CSH_NULL_GLOB` or bash `nullglob`, sliding the words after
-  it into write-target positions; the write-target checks are run for the
-  command and for every list those vanishing globs could leave behind, and
-  past six such globs Tess asks (item d). An assignment value is globbed under
-  zsh `GLOB_ASSIGN`, so an unquoted glob in `NAME=value` is read as a pattern
-  at every later use, quoted or not (item e). Glob matching is treated as
-  case-insensitive throughout (zsh `NO_CASE_GLOB`, bash `nocaseglob`, and the
-  common case-insensitive filesystem): the protected-path match is case-blind,
-  and a handler name read for the task-start / hook rule is matched case-blind.
-  The complete per-option sweep — every zsh and bash option that changes word
-  splitting, globbing or expansion, each marked *modelled worst-case*, *fixed
-  here*, or *out of scope* with its reason — is in the 1.0.0 RC phase-7
-  mission record (`kb/wiki/missions/2026-10-25-tess-os-rc-phase7-report.md`),
-  and this paragraph matches that table. Out of scope, with the reason: zsh
-  `BRACE_CCL` (`{ab}` expands to the words `a b`: a brace form Tess reads as
-  the literal `{ab}`, so a target it could spell is not checked — a real but
-  narrow gap, no protected path is a one-character brace set); zsh
-  `RC_EXPAND_PARAM` (rc-style array expansion: an array whose value Tess does
-  not know already falls to the run-time-value fail-safe, which asks). Covered
-  without a separate rule because they can only make the shell match FEWER
-  names or split LESS than the worst case already assumed: zsh `NOMATCH` /
-  `NO_NOMATCH`, `IGNORE_BRACES`, `KSH_GLOB`, `SH_GLOB` (its `(` forms already
-  ask), `NUMERIC_GLOB_SORT` and `MAGIC_EQUAL_SUBST`, `SH_WORD_SPLIT` (the
-  field model already splits unquoted expansions), and bash `failglob` (a
-  non-matching glob aborts the command, so it never writes), `globstar`
-  (`**` is already walked) and `globasciiranges` (bracket-range collation
-  only; bracket classes are already read as "any character"). Inside the project, a glob listing that only ran past the limits
+  zsh `NULL_GLOB` / `CSH_NULL_GLOB` or bash `nullglob`, and every word after it
+  moves one position left: into a write-target slot, the code argument of
+  `python3 -c` or `node -e`, a wrapper's option argument, a function's `$1`,
+  `$2`, ... Tess counts as possibly vanishing every
+  word that can be a glob, decided by the same expansion model and worst-case
+  glob set as every other glob check: a word written as a glob, a word that is
+  one only under `EXTENDED_GLOB` (`^`, `~`, `#`), an unquoted variable or
+  command-substitution value that is one (bash globs expansion results by
+  default; zsh with `GLOB_SUBST`), a brace result that is one, and a word whose
+  value is only known at run time unless it is quoted. The whole command is
+  checked again for every word list those words could leave behind (a brace or
+  a split value counts field by field), and past six such words, or 64 such
+  lists, Tess asks (a4113f7 review, item d; a769130 review), unless the
+  command only reads or prints its words, so that a word moving left changes
+  nothing it checks (`echo`, `cat`, `ls`, `grep`, `wc`, `head` and the like,
+  `sort` without `-o`, and `git add`, `status`, `diff`, `log`, `show`,
+  `ls-files`, `grep` and `blame` when every such word comes after the
+  subcommand); a program whose options take values (`pytest --basetemp DIR`)
+  still asks. `set --` with a glob makes `$1`, `$2`, ...
+  a run-time value. What a function body sets under one of those readings is
+  kept as a possible value for the words after it, next to the plain
+  reading's. An assignment value is globbed under zsh `GLOB_ASSIGN`, so an
+  unquoted glob in `NAME=value`, or an unquoted value that is one (with
+  `GLOB_SUBST`), is read as a pattern at every later use, quoted or not
+  (item e). Glob matching is treated as case-insensitive throughout (zsh
+  `NO_CASE_GLOB`, bash `nocaseglob`, and the common case-insensitive
+  filesystem): the protected-path match is case-blind, and a handler name read
+  for the task-start / hook rule is matched case-blind. Every zsh and bash
+  option that changes word splitting, globbing or expansion is in the table
+  below, each *modelled* (read as the worst case), *covered* (it can only make
+  the shell match fewer names or split less than the worst case already
+  assumed) or *out of scope* with its reason; this paragraph matches it.
+
+  | Option (zsh / bash) | Status | How |
+  |---|---|---|
+  | `GLOB_DOTS` / `dotglob` | modelled | glob steps match dot names; `**` and `***` enter dot folders |
+  | `EXTENDED_GLOB` | modelled | `^ ~ #` are wildcards (also for word removal and the program word); `(...)` asks |
+  | `GLOB_SUBST` (bash always) | modelled | an unquoted value is read as a glob |
+  | `KSH_GLOB` / `extglob` | modelled | `@(..)`, `!(..)` use `(`, which asks |
+  | `NULL_GLOB`, `CSH_NULL_GLOB` / `nullglob` | modelled | the command is checked for every word list vanishing words can leave; past six, or 64 lists, asks, except for a command that only reads or prints its words |
+  | `GLOB_ASSIGN` | modelled | an unquoted glob, or an unquoted value that is one, in `NAME=value` is a glob at every use |
+  | `NO_CASE_GLOB` / `nocaseglob` | modelled | protected-path and handler-name matches are case-blind |
+  | `globstar` (bash) | modelled | `**` is walked |
+  | `NOMATCH`, `NO_NOMATCH` | covered | `NOMATCH` aborts a no-match command; `NO_NOMATCH` keeps the literal, the default reading |
+  | `failglob` (bash) | covered | a no-match glob aborts the command, so it never writes |
+  | `SH_WORD_SPLIT`, `MAGIC_EQUAL_SUBST` | covered | unquoted expansions are already split; `foo=*.c` is already read as a glob |
+  | `NUMERIC_GLOB_SORT` / `globasciiranges` | covered | order and collation only; bracket classes are read as "any character" |
+  | `IGNORE_BRACES`, `SH_GLOB` | covered | fewer words or fewer globs than the gate's reading |
+  | `BRACE_CCL` | out of scope | `{ab}` expands to the words `a b`; Tess reads the literal `{ab}`. Narrow: no protected path is a one-character brace set |
+  | `RC_EXPAND_PARAM` | out of scope | rc-style array expansion; an array whose value Tess does not know already asks (run-time-value fail-safe) |
+
+  Inside the project, a glob listing that only ran past the limits
   (1,000 names, 20,000 entries) is listed again with a larger budget (100,000
   names, 200,000 entries) when its fixed folder has no link on it and no step
   can climb out (`..`, or a step such as `.*` that can match `..`); names in
@@ -566,8 +592,13 @@ security reviews; they are stated so nobody relies on a check that is not there.
   set, over the whole command and any here-document); and every agent-CLI
   call made inside a peer call. Allowed: `--help`/`--version` and listing
   subcommands, and only provably read-only, non-interactive runs: `claude -p`
-  with `--tools ""`, with `--tools` or `--allowed-tools` limited to
-  Read/Grep/Glob, or with `--permission-mode plan`; `codex exec -s read-only`
+  with `--tools ""` or `--tools` limited to Read/Grep/Glob (the option that
+  limits the tools the child has; `--allowed-tools` and `--permission-mode
+  plan` only pre-approve or gate tools on top of the settings the child loads,
+  so since the 1.0.0 run-3 audit they ask), started in a folder inside this
+  project (a `cd` out of it, or to a folder only known at run time, asks,
+  because the child's settings and hooks come from its folder);
+  `codex exec -s read-only`
   (the sandbox named after `exec`; `--ephemeral`, `-m`, `--json`, `-o` to an
   unprotected file are fine); `gemini -p --approval-mode plan`. Every other
   run asks in Claude Code and is refused in Codex and the no-prompt modes,
@@ -588,7 +619,12 @@ security reviews; they are stated so nobody relies on a check that is not there.
   dispatch the claude or codex driver (claude when `--driver` is left out; the
   last `--driver`, or a unique prefix such as `--dri`, decides) asks in Claude
   Code, is refused in Codex and the no-prompt modes, and is refused inside a
-  peer call; only `--driver fake` and `--help` stay allowed. tessctl also
+  peer call; only `--driver fake` and `--help` stay allowed. A hook-skipping
+  variable (`CLAUDE_CODE_SIMPLE`, `CLAUDE_CODE_SAFE_MODE`, `CODEX_HOME`) set in
+  front of `tessctl run` or earlier in the same command is refused, as on a
+  direct claude or codex call (the drivers copy the environment into the
+  child); the same now holds for such a variable set earlier in the command
+  before a direct call. tessctl also
   refuses to dispatch when its own `TESS_CONSULT_DEPTH` is 1 or more, so a
   call the gate did not see cannot nest, but only while `TESS_CONSULT_DEPTH`
   survives: a child that unsets or resets it in the environment it hands to
@@ -616,15 +652,47 @@ security reviews; they are stated so nobody relies on a check that is not there.
   dispatched specialist". If a per-task worktree is ever added, tessctl must
   create it itself, refuse it when it is the project root, and compare the two
   by `st_dev`/`st_ino` before a codex worker gets more than `-s read-only`. Limits: claude and
-  codex flags were checked against `claude --help` 2.1.300 and `codex exec
+  codex flags were checked against `claude --help` 2.1.300 (`--tools` re-checked on 2.1.310) and `codex exec
   --help` 0.158.0; gemini's are from its documentation and are not verified on
   a real install; the other CLIs get a generic rule (bypass-shaped options
-  refused, anything else asks). An `--allowed-tools` or plan-mode run still
-  trusts the child's own permission settings and its Tess hooks. A runtime
+  refused, anything else asks). A `--tools` read-only run still trusts the
+  child's Tess hooks for what its read tools may read. A runtime
   launched through a script file or an interpreter (`node .../cli.js`), or a
   nested session whose process tree hides its parent, is not recognised. An
   unknown program name with an agent's arguments asks only when those
   arguments would be refused.
+- **The tess-gui dashboard launcher is an agent launch (1.0.0, run-3 audit).**
+  `gui/bin/tess-gui.mjs` serves a page on the loopback address that starts a
+  headless `claude -p` for each mission it is given, without a shell, so the
+  agent-CLI rule, the nested-agent refusal and the agent budget above never see
+  that child. Starting the launcher is therefore judged like `tessctl run`:
+  `node .../tess-gui.mjs` (also through a glob), the script run directly, the
+  `tess-gui` bin (also through `npx` or `npm exec`), and `npm start` / `npm
+  run start` (or a script name only known at run time), `pnpm`, `yarn` or `bun`
+  the same, and `node --run start`, in the gui folder or pointed at it with
+  `--prefix` / `-C` / `--dir` / `--cwd`. Each asks in Claude Code, is refused
+  in Codex and the no-prompt modes, is refused inside a peer call or a nested
+  session, is refused with a hook-skipping variable set, and counts one agent
+  against the task's budget. `npm test` in gui/ is unaffected. The launcher's
+  per-launch token, its loopback bind and its Host/Origin checks keep other
+  computers and web pages out of the API; they do not tell an operator's click
+  from a program running as you that holds the token, so an agent that started
+  the launcher (after the prompt) or reads its token can start missions
+  through the API, and those missions are not counted or checked by this rule.
+  Run the dashboard from your own terminal.
+- **Operator-chosen ship-check bases and nested control folders (1.0.0, run-3
+  audit).** `tessctl gate pre-push` with an explicit `--base` or `--head` (or a
+  word only known at run time after `pre-push`) runs the ship check, and its
+  receipt step, from a commit the caller chooses, so from an agent shell it
+  asks in Claude Code and is refused in Codex; the repository's pre-push hook
+  and CI choose their own base and are unchanged. Tess's `.tess/` control
+  files are protected at any depth, not only at the project root, so a nested
+  copy of `.tess/tess.lock` or `.tess/bin/` cannot be planted for a later
+  session started below it, and the Codex hook refuses to run when the nearest
+  folder holding `.tess/tess.lock` is not the top of its git repository (the
+  folder the brain hooks use); outside a git repository it keeps the nearest
+  lock. A nested Tess project inside another Tess project is therefore
+  write-protected from the outer session.
 - **Codex runs Tess's gate only when it runs project hooks at all.** In an
   untrusted project, or before the operator approves the Tess hooks in `/hooks`
   (and again after an update changes their hash), Codex runs no Tess hook and only
@@ -719,8 +787,9 @@ security reviews; they are stated so nobody relies on a check that is not there.
   write-protects, which no checkout, reset or rebase touches), and a listed
   checkout whose anchor is gone, or whose `~/.config` cannot be read, stops
   every tool call with a message saying to put the folder back or run
-  `tessctl anchor accept`. `tessctl doctor` and `anchor status` read only the
-  store, so in that case they say `anchor: none` while the hooks stop. A
+  `tessctl anchor accept`. `tessctl doctor`, `verify` and `anchor status`
+  read the same record, so in that case they report FAIL (the anchor is lost
+  and its store cannot be found) with the same advice. A
   process running as you that deletes both the store and that file (outside
   the agent's gated tools) turns the stop off, as before.
 - **`tess.manifest.json` is security configuration.** Its `owned_globs`,
@@ -800,7 +869,10 @@ security reviews; they are stated so nobody relies on a check that is not there.
   boundary under the gate and the anchor, which are unchanged. The root-level
   `chflags`/`chattr` call never follows a symlink (a4113f7 review, item c):
   macOS gets `chflags -h`, every path is re-checked with `lstat` right before
-  the call and skipped if a step is now a link, and after the call the locked
+  each batch of the call, and a path that is now a link, gone, or another file
+  or folder stops the whole run before sudo runs on that batch (batches
+  already done stay as they are; `tessctl harden status` shows them), and
+  after the call the locked
   set's device/inode identities must equal the listed set, or the command
   fails loudly — so a path swapped for a link between listing and call cannot
   redirect the root call. Only `harden on`

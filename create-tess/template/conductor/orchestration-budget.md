@@ -17,7 +17,7 @@ Agent fan-out is the largest cost in this system. Each spawned agent reloads the
 
 ## 2a. Agent budget and peer consults (enforced, 1.0.0)
 - A task may use **at most three agents per task**: dispatched subagents (Agent, Task, spawn_agent), `tessctl run`, and peer consults all count alike. A task is the work after one operator prompt (Claude Code) or one turn (Codex).
-- A peer agent (another runtime's CLI, such as `codex exec` or `claude -p`) may be consulted for **review only**: it runs read-only and non-interactive (`codex exec -s read-only`, `claude -p` in plan mode or with no tools or only Read/Grep/Glob, `gemini -p --approval-mode plan`), it cannot write, and it cannot start another agent or escalate.
+- A peer agent (another runtime's CLI, such as `codex exec` or `claude -p`) may be consulted for **review only**: it runs read-only and non-interactive (`codex exec -s read-only`, `claude -p` started inside the project with `--tools ""` or `--tools` limited to Read/Grep/Glob, `gemini -p --approval-mode plan`), it cannot write, and it cannot start another agent or escalate.
 - The safety gate enforces both: a write-capable or approval-bypassing peer run asks or is refused, a call made inside a peer call is refused, and a call that would take the task past three agents asks in Claude Code (only the operator can approve more) and is refused in Codex.
 
 ## 3. Verification is proportional

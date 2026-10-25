@@ -28,13 +28,16 @@ user config):
 1.0.0 (Cyra f8 review, item a; a4113f7 review, items d, e, g): Claude Code
 runs an agent's commands with the operator's own shell options, which Tess
 cannot see, so every shell also runs under extra option profiles:
-  * `+worst` — every modelled match-broadening option at once: zsh GLOB_DOTS,
-    EXTENDED_GLOB, GLOB_SUBST, GLOB_ASSIGN and NO_CASE_GLOB; bash dotglob,
-    extglob, nocaseglob and globstar (where the bash has it).
+  * `+worst` — every modelled option at once: zsh GLOB_DOTS, EXTENDED_GLOB,
+    GLOB_SUBST, GLOB_ASSIGN, NO_CASE_GLOB and NULL_GLOB; bash dotglob, extglob,
+    nocaseglob, nullglob and globstar (where the bash has it). With null-glob
+    on too, a word that is a glob only through an expanded value (zsh
+    GLOB_SUBST) or only under EXTENDED_GLOB really vanishes when it matches
+    nothing (a769130 review), which no single-option profile shows in zsh.
   * `+nullglob` — the word-removal option on its own (zsh NULL_GLOB, bash
     nullglob), with the match-broadening options OFF so a decoy glob reliably
-    matches nothing and vanishes (item d). It is a separate profile because
-    the broadening options would make the decoy match and hide the shift.
+    matches nothing and vanishes (item d). It stays a separate profile because
+    the broadening options can make a decoy match and hide the shift.
 Each profile is named `<shell>+<profile>` (see PROFILES / profile_argv)."""
 
 from __future__ import annotations
@@ -487,8 +490,8 @@ PROFILES = ("", WORST_SUFFIX, NULLGLOB_SUFFIX)
 # Per profile: zsh `setopt` names, and bash `shopt -s` names. globstar is
 # added for bash only where the bash supports it (checked at run time).
 _PROFILE_OPTS = {
-    WORST_SUFFIX: (("globdots", "extendedglob", "globsubst", "globassign", "nocaseglob"),
-                   ("dotglob", "extglob", "nocaseglob")),
+    WORST_SUFFIX: (("globdots", "extendedglob", "globsubst", "globassign", "nocaseglob", "nullglob"),
+                   ("dotglob", "extglob", "nocaseglob", "nullglob")),
     NULLGLOB_SUFFIX: (("nullglob",), ("nullglob",)),
 }
 _GLOBSTAR: dict = {}

@@ -119,7 +119,12 @@ def test_e3_every_match_of_an_extract_destination_glob_is_checked(proj, E3):  # 
 
 def test_e3_neighbours_are_unchanged(proj, E3):  # noqa: F811
     assert _all(proj, _fill("tar -xf @A -C @V/e*", proj, E3)) == DENY  # the link alone
-    assert _all(proj, _fill("tar -xf @A -C @W/e[*]", proj, E3)) == ALLOW  # only the plain folder
+    # 1.0.0 (a769130 review, M1 class): `e[*]` is a glob, which null-glob can
+    # drop, leaving `-C` without its folder; Tess then reads the extraction as
+    # into the current folder (the project), where the archive's member is a
+    # protected name. Refused under that worst case (it allowed before).
+    assert _all(proj, _fill("tar -xf @A -C @W/e[*]", proj, E3)) == DENY
+    assert _all(proj, _fill("tar -xf @A -C '@W/e*'", proj, E3)) == ALLOW  # the quoted folder
 
 
 # ====================================================================== E4

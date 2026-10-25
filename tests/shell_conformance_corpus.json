@@ -1,5 +1,5 @@
 {
- "_doc": "Attack and everyday command templates for tests/test_v1_shell_conformance.py. @P project, @H home, @W a folder outside the project with links into it (tests/shell_conformance.py _world), /tmp/ the sandbox temp folder. q6-q13: Quinn's d2a5707 probes (G1, G2, X, NUL, everyday). extra*: round-4 conformance probes (zsh and bash syntax). z1: round-4b probes (Reid Z1), zsh recursive glob steps through links at depth 2-3 to .claude, the project root and the home folder; u3: array assignments after reserved words. Bash without globstar reads ** as *, one step that enters a link at depth 1. f8: Cyra's f8 review (1.0.0), globs read under the worst case of the shell options (dot names, zsh EXTENDED_GLOB `^ ~ #`, zsh `<N-M>`) and process substitution before a recursive glob; every shell also runs with GLOB_DOTS/EXTENDED_GLOB (zsh) or dotglob/extglob (bash). a4: the a4113f7 review (1.0.0), null-glob word removal shifting a write target (refused) and zsh GLOB_ASSIGN with a quoted use (refused), with allowed neighbours; every shell also runs as +nullglob (NULL_GLOB / nullglob alone), and +worst turns on every modelled option.",
+ "_doc": "Attack and everyday command templates for tests/test_v1_shell_conformance.py. @P project, @H home, @W a folder outside the project with links into it (tests/shell_conformance.py _world), /tmp/ the sandbox temp folder. q6-q13: Quinn's d2a5707 probes (G1, G2, X, NUL, everyday). extra*: round-4 conformance probes (zsh and bash syntax). z1: round-4b probes (Reid Z1), zsh recursive glob steps through links at depth 2-3 to .claude, the project root and the home folder; u3: array assignments after reserved words. Bash without globstar reads ** as *, one step that enters a link at depth 1. f8: Cyra's f8 review (1.0.0), globs read under the worst case of the shell options (dot names, zsh EXTENDED_GLOB `^ ~ #`, zsh `<N-M>`) and process substitution before a recursive glob; every shell also runs with GLOB_DOTS/EXTENDED_GLOB (zsh) or dotglob/extglob (bash). a4: the a4113f7 review (1.0.0), null-glob word removal shifting a write target (refused) and zsh GLOB_ASSIGN with a quoted use (refused), with allowed neighbours; every shell also runs as +nullglob (NULL_GLOB / nullglob alone), and +worst turns on every modelled option. a7: the a769130 review (1.0.0), null-glob word removal of a word that is a glob only once expanded (an unquoted variable or command substitution, a brace result) or only under zsh EXTENDED_GLOB, the shift reaching a function's positional parameters and the other position-dependent checks (git option values, copy-into folders, link paths, sed scripts), and a GLOB_ASSIGN mark kept through a conditional reassignment, eval and a loop; +worst now also turns on null-glob, so zsh shows the GLOB_SUBST and EXTENDED_GLOB forms vanish.",
  "cases": {
   "q6:A-plain": "true; rm -rf \"@W/out/b-$?\"/.claude",
   "q6:A-upper": "true; rm -rf \"@W/out/b-$?\"/.CLAUDE",
@@ -503,6 +503,26 @@
   "a4:null-ok-curl": "curl -o @T/out.json https://example.invalid/x",
   "a4:null-ok-cp": "cp @P/src/a.py @P/web/dist/",
   "a4:globassign-prot": "X=@P/.cla*/hooks/tess-gate.py; cp @T/evil \"$X\"",
-  "a4:globassign-ok": "X=@P/src/*.py; printf '%s\\n' \"$X\""
+  "a4:globassign-ok": "X=@P/src/*.py; printf '%s\\n' \"$X\"",
+  "a7:nullshift-param-sort": "P='@T/zznone*.none'; sort -o $P @P/.claude/settings.json",
+  "a7:nullshift-param-hook": "P='@T/zznone*.none'; sort -o ${P} @P/.claude/hooks/tess-gate.py",
+  "a7:nullshift-subst-sort": "sort -o $(printf %s '@T/zznone*.none') @P/.claude/settings.json",
+  "a7:nullshift-brace-sort": "sort -o {@T/zznone,@T/zzother}*.none @P/.claude/settings.json",
+  "a7:nullshift-ext-sort": "sort -o @T/zznone# @P/.claude/settings.json",
+  "a7:nullshift-func": "f() { sort -o \"$2\" @P/src/a.py; }; f @T/zznone*.none @T/out.txt @P/.claude/settings.json",
+  "a7:nullshift-set": "set -- @T/zznone*.none @T/out.txt @P/.claude/settings.json; sort -o \"$2\" @P/src/a.py",
+  "a7:globassign-subst": "Y='@P/.cla*/settings.json'; X=$Y; cp @P/src/a.py \"$X\"",
+  "a7:null-ok-param": "P='@P/src/*.py'; sort -o @T/out.txt $P",
+  "a7:null-ok-brace": "printf '%s\\n' {@T/a,@T/b}*.none",
+  "a7:null-ok-hash": "curl -o @T/out.json https://example.invalid/x#frag",
+  "a7:nullshift-git-c": "git -C @P -c @T/zznone*.none core.hooksPath=@T/h status",
+  "a7:nullshift-cp-t": "cp -t @T/zznone*.none @P/.claude/hooks @P/src/a.py",
+  "a7:nullshift-ln": "ln -sf @P/src/a.py @T/zznone*.none @P/.claude/settings.json",
+  "a7:nullshift-sed": "sed -i -e @T/zznone*.none 's/a/b/' @P/.claude/settings.json",
+  "a7:nullshift-tee": "printf x | tee @T/zznone*.none @P/.claude/settings.json",
+  "a7:globassign-cond": "X=@P/.cla*/settings.json; true && X=@T/out.txt; cp @P/src/a.py \"$X\"",
+  "a7:globassign-eval": "eval 'X=@P/.cla*/settings.json'; cp @P/src/a.py \"$X\"",
+  "a7:globassign-loop": "X=@P/.cla*/settings.json; for X in; do :; done; cp @P/src/a.py \"$X\"",
+  "a7:globassign-ok-reassign": "X=@P/.cla*/settings.json; X=@T/out.txt; cp @P/src/a.py \"$X\""
  }
 }

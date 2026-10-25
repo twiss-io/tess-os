@@ -545,7 +545,26 @@ def protected_hit(root: Path, cwd: str, path: str) -> str | None:
         return "scripts/<module> (imported by scripts/tess at every session start)"
     # A home directory inside the project (unusual) still has its control files.
     return _glob_hit(rel, tuple(sorted(_security_tier_paths(root))) + PROTECTED_GLOBS) or \
-        control_file_hit(root, cwd, path)
+        _nested_tess_hit(rel) or control_file_hit(root, cwd, path)
+
+
+# run-3 audit (unit 5): Tess's control folder is protected at any depth, not
+# only at the project root, so a nested copy of `.tess/tess.lock` (with the
+# rest of `.tess/`) cannot be planted for a later session that starts below
+# it; the Codex hook also refuses a nearest lock that is not at the top of its
+# repository (.codex/config.toml).
+_TESS_DIR_GLOBS = tuple(g for g in PROTECTED_GLOBS if g.startswith(".tess/"))
+
+
+def _nested_tess_hit(rel: str) -> str | None:
+    parts = rel.split("/")
+    for i in range(1, len(parts)):
+        _tick()  # E8: budget check per iteration
+        if parts[i].lower() == ".tess":
+            hit = _glob_hit("/".join(parts[i:]), _TESS_DIR_GLOBS)
+            if hit:
+                return f"{hit} (a nested copy under {'/'.join(parts[:i])}/)"
+    return None
 
 
 # --------------------------------------------------------------------------- control files outside the project (v1.0 audit)
@@ -749,7 +768,10 @@ def _check_key_text(cwd: str, argv: list, raw: str, v, ctx: "_Ctx | None" = None
         # too; the names it matches are checked like any other glob's.
         for text, pat in vals or []:
             _tick()  # E8: budget check per iteration
-            if pat and not any(c in text for c in "*?["):
+            # a769130 review (Reid M2): every field that is a glob (the shared
+            # predicate), also one that mixes `^ ~ #` with `* ? [`, which the
+            # plain listing below reads with `^` and `~` as literal text.
+            if _field_globs(text, pat):
                 ext = _glob(cwd, pat)
                 if any(key_hit(cwd, g, ancestors=recursive) for g in ext):
                     v.add(DENY, f"it reaches {a}, Tess's key directory; the signing keys there are "
@@ -4093,7 +4115,7 @@ class _Ctx:
             self.vars[k] = None if re.search(r"[$`]", str(val)) else [str(val)]
             self.nonopt.discard(k)
 
-    def assign(self, name: str, vals, cond: bool, nonopt: bool = False) -> None:
+    def assign(self, name: str, vals, cond: bool, nonopt: bool = False, globbed: bool = False) -> None:
         """Set `name`. `cond`: the assignment may not run (an if/while/case
         branch, an && / || arm), so the value is the union of the old and
         new values -- unknown when either is, or when the union is larger
@@ -4111,11 +4133,15 @@ class _Ctx:
             self.nonopt.add(name)
         else:
             self.nonopt.discard(name)
-        if getattr(self, "_assign_globbed", False):
+        # `globbed`: the new value was globbed when it was assigned (zsh
+        # GLOB_ASSIGN; an explicit argument, so no other assign() can take the
+        # mark). Cyra delta review / run-3 audit (C2): a conditional assignment
+        # keeps the old value as a possibility, so it keeps the old mark too;
+        # when unsure, the variable stays a glob.
+        if globbed or (cond and name in self.globvars):
             self.globvars.add(name)
         else:
             self.globvars.discard(name)
-        self._assign_globbed = False  # one-shot: set right before each assign()
 
 
 def _writer_name(low: str) -> str | None:
@@ -4382,13 +4408,13 @@ def _val_chunk(x: str, quoted: bool, assign: bool) -> tuple:
     return (x, x, bool(_GLOB_WORST.search(x)), True)
 
 
-def _value_has_unquoted_glob(word) -> bool:
-    """True when `word` (an assignment value) holds an unquoted glob character
-    (worst case: zsh GLOB_ASSIGN globs it when it is assigned)."""
-    if not isinstance(word, _Word) or not word.parts:
-        return bool(_GLOB_WORST.search(str(word)))
-    return any(k in ("raw", "fallback") and not _part_quoted(word, n) and _GLOB_WORST.search(t)
-               for n, (k, t) in enumerate(word.parts))
+def _value_has_unquoted_glob(word, cwd: "str | None" = None, ctx: "_Ctx | None" = None) -> bool:
+    """True when `word` (an assignment value) can be a glob (worst case: zsh
+    GLOB_ASSIGN globs it when it is assigned). Cyra delta review of a769130:
+    the shared predicate, part by part (an assignment value is neither
+    brace-expanded nor split), so an unquoted value that holds a glob counts
+    too (GLOB_ASSIGN with GLOB_SUBST)."""
+    return _parts_may_glob(word, cwd, ctx)
 
 
 def _part_alts(kind: str, t: str, quoted: bool, first: bool, cwd, ctx: "_Ctx", assign: bool):
@@ -5478,44 +5504,148 @@ def _output_targets(name: str, args: list) -> list:
     return out
 
 
-# 1.0.0 (Cyra review of a4113f7, item d): the write-target binding reads an
-# argument list by position, but under NULL_GLOB / CSH_NULL_GLOB (zsh) and
-# nullglob (bash) a glob that matches nothing is removed before the program
-# runs, so a later word slides into an option-argument or trailing-operand
-# slot (`curl -o <no-match> PROT` runs `curl -o PROT`). The checks are run
-# for the argument list AND for every list a set of possibly-vanishing glob
-# words could leave behind (_NULLGLOB_CAP caps the subsets; past it, ask).
+# 1.0.0 (Cyra review of a4113f7, item d; Cyra delta review of a769130, M1 as a
+# class): under NULL_GLOB / CSH_NULL_GLOB (zsh) and nullglob (bash) a glob that
+# matches nothing is removed before the command runs, so every later word moves
+# one position left. Every rule that reads a command by position is affected:
+# the write-target binding (`curl -o <no-match> PROT` runs `curl -o PROT`), the
+# code argument of `python3 -c` / `node -e`, a wrapper's option argument, the
+# script of `source`, a function's $1, $2, ... So the null-glob readings are
+# not special-cased in one rule: _check_segment checks the whole simple command
+# again for every word list the shell can be left with (_nullglob_lists), the
+# same way it checks every brace result or variable value. A word counts as
+# possibly vanishing by the shared glob predicate (_vanishable -> _globbed): an
+# unquoted glob, an unquoted value or substitution that is or may be one, a
+# brace result that is one, a word only known at run time. Past _NULLGLOB_CAP
+# such words (or _NULLGLOB_LISTS lists), Tess asks.
 _NULLGLOB_CAP = 6
+_NULLGLOB_LISTS = 2 ** _NULLGLOB_CAP
 _NULLGLOB_ASK = ("the command has several globs that can match nothing; with nullglob those words "
-                 "vanish and move the others into write-target positions, more ways than Tess "
-                 "checks one by one, so it cannot tell what it writes; quote them or run fewer")
+                 "vanish and move the others into new positions (a file it writes, code it runs), "
+                 "more ways than Tess checks one by one, so it cannot tell what it does; quote them "
+                 "or run fewer")
 
 
-def _vanishable(word) -> bool:
-    """True when the shell may drop `word` entirely (an unquoted glob that
-    matches nothing, under nullglob / csh_null_glob): then the words after it
-    shift one position left."""
-    return _globbed(word) and not (isinstance(word, _Word) and (word.op or word.fd))
+def _vanishable(word, cwd: "str | None" = None, ctx: "_Ctx | None" = None) -> bool:
+    """True when the shell may drop `word` entirely (a glob that matches
+    nothing, under nullglob / csh_null_glob): then the words after it shift
+    one position left. Cyra delta review of a769130 (M1, L1): decided by the
+    shared predicate _globbed, from the word's expansion model with the
+    worst-case glob set, so an unquoted value or a brace result that is a
+    glob counts, and so does a word only known at run time."""
+    return not (isinstance(word, _Word) and (word.op or word.fd)) and _globbed(word, cwd, ctx)
 
 
-def _write_targets_wc(argv: list, orig: list | None = None) -> tuple:
-    """(write-target words, too many) under the worst case of the null-glob
-    options (item d): the targets of `argv`, plus those of `argv` with each
-    subset of its vanishable glob words removed. `too many` when there are
-    more such words than _NULLGLOB_CAP; the caller then asks."""
+def _nullglob_lists(orig: list, cwd: "str | None", ctx: "_Ctx") -> tuple:
+    """([word list, ...], too many): every word list a simple command can be
+    left with when some of its possibly-vanishing words match nothing, the
+    unchanged list excluded. A vanishing word that expands to several fields
+    (a brace, a split value) is replaced by its fields (_Field), each of which
+    can vanish on its own; a word with alternative expansions gives one list
+    per alternative. Assignments in front of the program and redirections are
+    never globbed. Words already enumerated by an enclosing reading of the
+    same command (ctx.ng_done) are left as they are."""
     import itertools
-    out = list(_write_targets(argv, orig))
-    van = [i for i in range(1, len(argv)) if _vanishable(argv[i])]
-    if not van:
-        return out, False
-    if len(van) > _NULLGLOB_CAP:
-        return out, True
-    for r in range(1, len(van) + 1):
-        for combo in itertools.combinations(van, r):
-            _tick()  # E8: budget check per iteration
-            drop = set(combo)
-            out += _write_targets([a for j, a in enumerate(argv) if j not in drop], orig)
+    done = getattr(ctx, "ng_done", frozenset())
+    slots, lead, per, any_van = _redirect_slots(orig), True, [], False
+    for i, w in enumerate(orig):
+        _tick()  # E8: budget check per iteration
+        fixed = [[(w, False)]]
+        if i in slots or _is_op(w):
+            per.append(fixed)
+            continue
+        if lead and re.match(r"^[A-Za-z_]\w*\+?=", str(w)):
+            per.append(fixed)
+            continue
+        lead = False
+        if id(w) in done or not _vanishable(w, cwd, ctx):
+            per.append(fixed)
+            continue
+        any_van = True
+        cands = None if isinstance(w, _Field) else _word_fields(w, cwd, ctx)[0]
+        if cands is None:
+            per.append([[(w, True)]])
+        else:
+            per.append([[(_field(t, p), _field_globs(t, p)) for t, p in cand] for cand in cands] or [[]])
+    if not any_van:
+        return [], False
+    alts = [[]]
+    for opts in per:
+        _tick()  # E8: budget check per iteration
+        if len(alts) * len(opts) > _VARIANT_LIMIT:
+            return [], True
+        alts = [a + o for a in alts for o in opts]
+    out = []
+    for alt in alts:
+        _tick()  # E8: budget check per iteration
+        van = [j for j, (_w, r) in enumerate(alt) if r]
+        if len(van) > _NULLGLOB_CAP:
+            return [], True
+        for r in range(1 if len(alts) == 1 else 0, len(van) + 1):
+            for combo in itertools.combinations(van, r):
+                _tick()  # E8: budget check per iteration
+                if len(out) >= _NULLGLOB_LISTS:
+                    return [], True
+                drop = set(combo)
+                out.append([x for j, (x, _r) in enumerate(alt) if j not in drop])
     return out, False
+
+
+# a769130 review (Reid M3): programs whose words are only names they read or
+# print, so a word that moves left changes nothing Tess checks. `git` counts
+# only for these subcommands, and only when every possibly-vanishing word comes
+# after the subcommand (before it, a word can move into an option's value).
+_SHIFT_SAFE = (_READONLY_PROGRAMS - {"cd", "pushd", "popd", "export", "set", "unset", "read", "for",
+                                     "local", "declare", "typeset", "readonly"}) | {
+    "less", "more", "file", "du", "sort", "cut", "tr", "nl", "md5", "md5sum", "shasum",
+    "sha256sum", "cmp"}
+_GIT_SHIFT_SAFE = {"add", "stage", "status", "diff", "log", "show", "ls-files", "grep", "blame"}
+
+
+def _shift_matters(orig: list, ctx: "_Ctx") -> bool:
+    """A word list moved left by null-glob can change what Tess checks for
+    this command (too many lists to check one by one: then it asks)."""
+    res = _resolve(list(orig))
+    argv = res.argv
+    if not argv or res.inner or res.via_xargs:
+        return True
+    head = argv[0]
+    if _dynamic(head) or _braced(head) or _globbed(head, None, ctx):
+        return True
+    name = os.path.basename(str(head)).lower()
+    if name in ctx.funcs or name in ctx.aliases or res.env:
+        return True
+    if name in _SHIFT_SAFE:
+        # a sort -o / output option would be a write slot
+        return name == "sort" and any(str(a).startswith(("-o", "--output")) for a in argv[1:])
+    if name == "git":
+        words = [str(a) for a in argv[1:]]
+        k = next((i for i, w in enumerate(words) if not w.startswith("-")), None)
+        if k is None or words[k] not in _GIT_SHIFT_SAFE or any(
+                w.startswith("-") and w not in ("--", "-A", "-u", "-p", "-n", "-v", "-f", "-r",
+                                               "--cached", "--staged", "--stat", "--all")
+                for w in words[k + 1:]):
+            return True
+        return any(_vanishable(a, None, ctx) for a in argv[1:k + 2])
+    return True
+
+
+def _merge_nullgone(ctx: "_Ctx", child: "_Ctx") -> None:
+    """What a null-glob reading of a command set (a function body it ran),
+    kept for the words after it as a possible value next to the plain
+    reading's (never in its place)."""
+    for n in set(ctx.vars) | set(child.vars):
+        _tick()  # E8: budget check per iteration
+        old, new = ctx.vars.get(n, _UNSET), child.vars.get(n, _UNSET)
+        if old == new and (n in ctx.globvars) == (n in child.globvars):
+            continue
+        ctx.assign(n, None if _UNSET in (old, new) else new, True,
+                   nonopt=n in ctx.nonopt and n in child.nonopt,
+                   globbed=n in ctx.globvars or n in child.globvars)
+    ctx.opaque = ctx.opaque or child.opaque
+    ctx.mutated = ctx.mutated or child.mutated
+    if child.argv != ctx.argv:
+        ctx.argv = None
 
 
 def _write_targets(argv: list, orig: list | None = None) -> list:
@@ -7848,11 +7978,63 @@ def _braced(word) -> bool:
         return True
 
 
-def _globbed(word) -> bool:
-    """An unquoted glob in `word` (`/usr/bin/g[i]t`): the shell replaces it
-    with the matching names before it runs anything."""
-    return isinstance(word, _Word) and not isinstance(word, _Field) and any(
-        k == "raw" and re.search(r"[*?]|\[[^]]+\]", t) for k, t in word.parts)
+# 1.0.0 (Cyra delta review of a769130, M1 and L1): the ONE answer to "can the
+# shell read this word as a glob?", for every caller (the program word, the
+# null-glob word removal of the write-target binding, and a GLOB_ASSIGN value).
+# It is read from the gate's own expansion model of the word (_word_fields:
+# brace results, variable and substitution values, field splitting), with the
+# worst-case glob set of the rest of the gate (_GLOB_WORST: zsh EXTENDED_GLOB
+# `^ ~ #` too), never from a separate lexical test of the written text. So a
+# glob that only appears once the word is expanded counts: an unquoted value
+# that holds one (bash globs expansion results by default; zsh with
+# GLOB_SUBST), and a brace result. A word only known at run time counts unless
+# every unknown part is quoted (a quoted expansion is never globbed). A
+# pattern that is just its own text escaped (a lone `[`, which both shells
+# keep as written) is not a glob.
+def _field_globs(text: str, pat: "str | None") -> bool:
+    """A field (text, glob pattern or None) whose pattern is a real wildcard."""
+    return pat is not None and pat != _gescape(text)
+
+
+def _text_globs(text: str) -> bool:
+    """Unquoted `text` is a glob under the worst case of the shell options."""
+    return bool(_GLOB_WORST.search(text)) and _field_globs(text, _shell_glob(_ext_glob(_ext_mark(text))))
+
+
+def _parts_may_glob(word, cwd, ctx: "_Ctx | None") -> bool:
+    """Part by part (no brace expansion, no splitting): some part of `word`
+    can give an unquoted glob, or is only known at run time and unquoted."""
+    if not isinstance(word, _Word) or isinstance(word, _Field) or not word.parts:
+        s = str(word)
+        return bool(re.search(r"[$`]", s)) or _text_globs(s)
+    ctx = ctx if ctx is not None else _Ctx("")
+    for n, (k, t) in enumerate(word.parts):
+        _tick()  # E8: budget check per iteration
+        if k == "lit":
+            continue
+        q = _part_quoted(word, n)
+        opts = _part_alts(k, t, q, n == 0, cwd, ctx, False)
+        if opts is None:
+            if k == "proc" or (q and not (k == "var" and t in ctx.globvars)):
+                continue  # a /dev/fd path, or a quoted value: never globbed
+            return True
+        if any(c is not None and c[2] and _text_globs(c[0]) for alt in opts for c in alt):
+            return True
+    return False
+
+
+def _globbed(word, cwd: "str | None" = None, ctx: "_Ctx | None" = None) -> bool:
+    """`word` can be a glob (`/usr/bin/g[i]t`, `$P` holding `*.x`, `{a,b}*`):
+    the shell replaces it with the matching names (or, under null-glob,
+    drops it) before it runs anything. See the section comment above."""
+    if isinstance(word, _Field):
+        return _field_globs(str(word), word.pat)
+    if isinstance(word, _Word) and (word.op or word.fd):
+        return False
+    cands, _ = _word_fields(word, cwd, ctx)
+    if cands is not None:
+        return any(_field_globs(t, p) for cand in cands for t, p in cand)
+    return _parts_may_glob(word, cwd, ctx)
 
 
 def _expands(word) -> bool:
@@ -8708,7 +8890,8 @@ def _empty_mcp(cwd: str, vals: list) -> bool:
     return True
 
 
-def _parse_claude(root: Path, cwd: str, args: list, env: dict, run: _AgentRun) -> None:
+def _parse_claude(root: Path, cwd: str, args: list, env: dict, run: _AgentRun,
+                  cwd_known: bool = True) -> None:
     words = [str(a) for a in args]
     if words and words[0] in _CLAUDE_SUBS:
         pos = tuple(w for w in words if not w.startswith("-"))[:2]
@@ -8792,9 +8975,17 @@ def _parse_claude(root: Path, cwd: str, args: list, env: dict, run: _AgentRun) -
     if mcp and extra:
         run.ask.append("it loads MCP servers (--mcp-config), whose tools Tess cannot check here")
     tools_ro = tools is not None and all(t.lower() in _RO_TOOLS for t in tools) and not extra
-    allowed_ro = bool(allowed) and all(t.lower() in _RO_TOOLS for t in allowed)
-    run.readonly = no_tools or tools_ro or perm == "plan" or (allowed_ro and perm in (None, "default",
-                                                                                      "manual"))
+    # run-3 audit (unit 2): only `--tools` limits the tools the child HAS
+    # (claude 2.1.310 --help: "Specify the list of available tools from the
+    # built-in set"); --allowed-tools and --permission-mode plan pre-approve or
+    # gate tools on top of the allow rules and default mode in the settings the
+    # child loads. Those settings and hooks come from the child's working
+    # folder, so it must be inside this project too (cwd None: not known).
+    inside = cwd_known and cwd is not None and _rel_to_root(root, cwd, ".") is not None
+    run.readonly = (no_tools or tools_ro) and inside
+    if (no_tools or tools_ro) and not inside:
+        run.ask.append("it starts claude in a folder that is outside this project or only known "
+                       "at run time, where other settings and hooks apply")
 
 
 _CODEX_VALUES = {"-c": 1, "--config": 1, "--enable": 1, "--disable": 1, "--remote": 1,
@@ -8987,13 +9178,20 @@ def _check_agent_cli(root: Path, cwd: str, agent: str, argv: list, orig: list, e
     args = [argv[i] for i in range(1, len(argv)) if i not in slots]
     run = _AgentRun()
     if agent == "claude":
-        _parse_claude(root, cwd, args, env, run)
+        _parse_claude(root, cwd, args, env, run, cwd_known=not getattr(ctx, "cwd_unknown", False))
     elif agent == "codex":
         _parse_codex(args, env, run)
     elif agent == "gemini":
         _parse_gemini(args, run)
     else:
         _parse_generic(agent, args, env, run)
+    if agent in _HOOK_SKIP_ENV:
+        # run-3 audit (unit 3): a hook-skipping variable set earlier in the
+        # command (exported, or with `set -a`) reaches the child too.
+        for k in _hook_skip_env({}, ctx, agent):
+            _tick()  # E8: budget check per iteration
+            if not any(x.startswith(k) for x in run.skip):
+                run.skip.append(k)
     _check_targets(root, cwd, run.targets, v, ctx)
     if run.info and not run.deny:
         return
@@ -9029,8 +9227,8 @@ def _check_agent_cli(root: Path, cwd: str, agent: str, argv: list, orig: list, e
                    "(Codex could also type into it later without Tess seeing)")
     elif not run.readonly:
         v.add(ASK, f"it starts a headless {agent} run that is not provably read-only; only "
-                   + {"claude": "claude -p with --tools \"\", --permission-mode plan or "
-                                "--allowed-tools limited to Read/Grep/Glob",
+                   + {"claude": "claude -p with --tools \"\" or --tools limited to "
+                                "Read/Grep/Glob, started inside this project,",
                       "codex": "codex exec -s read-only",
                       "gemini": "gemini -p --approval-mode plan"}.get(agent, "a read-only form")
                    + " runs without asking")
@@ -9326,13 +9524,53 @@ def _check_tessctl_run(env: dict, words: list, v: Verdict, ctx: "_Ctx", res: "_C
     driver = _tessctl_run_driver(words)
     if driver is None or driver == "fake":
         return
-    _STATE["agents"] = _STATE.get("agents", 0) + 1  # 1.0.0: counts toward the task's agent budget
     what = ("`tessctl run` (the claude driver unless --driver says otherwise)" if driver == "claude"
             else "`tessctl run --driver codex`" if driver == "codex"
             else "`tessctl run` with a driver Tess cannot pin down")
     if via_xargs:
         what = ("tessctl through xargs, which adds words Tess cannot see and so can make it "
                 + what)
+    # run-3 audit (unit 3): the drivers copy this environment into the child, so
+    # a variable that skips Tess's hooks there is refused as on a direct claude
+    # or codex call (_parse_claude / _parse_codex).
+    for k in _hook_skip_env(env, ctx, driver):
+        _tick()  # E8: budget check per iteration
+        v.add(DENY, f"{what} would start its agents with {k} set, which skips Tess's hooks or "
+                    "settings in the child, and the child still has tools", "agentcli")
+    _launch_verdict(what, "dispatches headless agents that work in this project with their own "
+                          "permissions, one per crew-plan task and verifier", env, v, ctx)
+
+
+# Variables that make a claude or codex child skip Tess's hooks or settings
+# (the same set _parse_claude and _parse_codex refuse on a direct call).
+_HOOK_SKIP_ENV = {"claude": ("CLAUDE_CODE_SIMPLE", "CLAUDE_CODE_SAFE_MODE"), "codex": ("CODEX_HOME",)}
+
+
+def _hook_skip_env(env: dict, ctx: "_Ctx", driver: str) -> list:
+    """The hook-skipping variables a launch would pass to its child: set in
+    front of the command, or earlier in this command (exported or not: `set
+    -a` exports every assignment; when unsure, it counts). A driver Tess
+    cannot pin down counts as either."""
+    keys = _HOOK_SKIP_ENV.get(driver) or tuple(k for ks in _HOOK_SKIP_ENV.values() for k in ks)
+    out = []
+    for k in keys:
+        _tick()  # E8: budget check per iteration
+        if k in env:
+            if str(env[k]) not in ("", "0"):
+                out.append(f"{k}={str(env[k])[:60]}")
+        elif k in ctx.vars:
+            vals = ctx.vars[k]
+            if vals is None or any(str(x) not in ("", "0") for x in vals):
+                out.append(k)
+    return out
+
+
+def _launch_verdict(what: str, does: str, env: dict, v: Verdict, ctx: "_Ctx") -> None:
+    """One launch of Tess's own agent launchers (`tessctl run`, the tess-gui
+    dashboard): counted against the task's agent budget, refused inside a
+    peer call or a nested session, and otherwise asked (an ask is refused in
+    Codex and in the modes that cannot ask)."""
+    _STATE["agents"] = _STATE.get("agents", 0) + 1  # 1.0.0: counts toward the task's agent budget
     depth = _consult_depth()
     if depth >= 1 or "TESS_CONSULT_DEPTH" in env or "TESS_CONSULT_DEPTH" in ctx.vars:
         why = (f"this session already runs inside a peer call (TESS_CONSULT_DEPTH={depth})" if depth >= 1
@@ -9345,8 +9583,93 @@ def _check_tessctl_run(env: dict, words: list, v: Verdict, ctx: "_Ctx", res: "_C
         v.add(DENY, f"{what} dispatches agents from {nested}; a peer call may not start another agent",
               "agentcli")
         return
-    v.add(ASK, f"{what} dispatches headless agents that work in this project with their own "
-               "permissions, one per crew-plan task and verifier")
+    v.add(ASK, f"{what} {does}")
+
+
+# run-3 audit (C4): Tess's dashboard launcher (gui/bin/tess-gui.mjs, the
+# `tess-gui` bin, `npm start` in gui/) serves a local API that starts a
+# headless claude child for each mission, spawned without a shell, so the
+# agent-CLI rule, the nested-agent refusal and the agent budget never see that
+# child. Starting the launcher is therefore judged like `tessctl run`.
+_GUI_SCRIPT = "tess-gui.mjs"
+_GUI_BIN = "tess-gui"
+_NODE_RUNNERS = {"node", "nodejs", "bun", "deno"}
+_PKG_MANAGERS = {"npm", "pnpm", "yarn", "bun"}
+_PKG_START = {"start", "restart"}
+_PKG_RUN = {"run", "run-script", "rum", "urn"}
+_PKG_DIR_OPTS = {"--prefix", "-C", "--dir", "--cwd"}
+
+
+def _names_file(word, cwd, ctx: "_Ctx", base: str) -> bool:
+    """`word` can name a file called `base` (by its text, or a glob it holds);
+    a word only known at run time is left to the interpreter rules."""
+    if isinstance(word, _Word) and (word.op or word.fd):
+        return False
+    vals, _ = _word_values(word, cwd, ctx)
+    for text, pat in vals or []:
+        _tick()  # E8: budget check per iteration
+        leaf = os.path.basename(str(text).rstrip("/")).lower()
+        if leaf == base or (pat and fnmatch.fnmatchcase(base, _shell_glob(os.path.basename(pat)).lower())):
+            return True
+    return False
+
+
+def _is_gui_dir(root: Path, here: "str | None") -> bool:
+    """`here` is Tess's gui/ folder (or any folder holding bin/tess-gui.mjs)."""
+    full = os.path.realpath(here or str(root))
+    return full == os.path.realpath(os.path.join(str(root), "gui")) or os.path.isfile(
+        os.path.join(full, "bin", _GUI_SCRIPT))
+
+
+def _gui_launch(root: Path, cwd: "str | None", name: str, argv: list, ctx: "_Ctx") -> "str | None":
+    """How this program would start the tess-gui launcher, or None."""
+    words = [str(a) for a in argv[1:]]
+    if name in (_GUI_BIN, _GUI_SCRIPT):
+        return f"`{name}`"
+    if name in _NODE_RUNNERS:
+        if any(_names_file(a, cwd, ctx, _GUI_SCRIPT) for a in argv[1:]):
+            return f"`{name} .../{_GUI_SCRIPT}`"
+        if "--run" in words and words[words.index("--run") + 1:words.index("--run") + 2] in (
+                ["start"], ["restart"]) and _is_gui_dir(root, cwd):
+            return f"`{name} --run start` in gui/"
+    if name not in _PKG_MANAGERS:
+        return None
+    here, i, pos = cwd, 0, []
+    while i < len(words):
+        _tick()  # E8: budget check per iteration
+        w = words[i]
+        opt, eq, val = w.partition("=")
+        if opt in _PKG_DIR_OPTS:
+            val = val if eq else (words[i + 1] if i + 1 < len(words) else "")
+            i += 1 if eq else 2
+            if val:
+                here = os.path.join(cwd or str(root), os.path.expanduser(val))
+            continue
+        if not w.startswith("-"):
+            pos.append(w)
+        i += 1
+    if pos[:2] in (["exec", _GUI_BIN], ["x", _GUI_BIN], ["dlx", _GUI_BIN]):
+        return f"`{name} {pos[0]} {_GUI_BIN}`"
+    if not pos or not _is_gui_dir(root, here):
+        return None
+    if pos[0] in _PKG_START or (pos[0] in _PKG_RUN and len(pos) > 1 and (
+            pos[1] in _PKG_START or _RUNTIME_TEXT.search(pos[1]))):
+        return f"`{name} {' '.join(pos[:2])}` in gui/"
+    return None
+
+
+def _check_gui_launcher(root: Path, cwd: "str | None", name: str, argv: list, env: dict, v: Verdict,
+                        ctx: "_Ctx") -> None:
+    how = _gui_launch(root, cwd, name, argv, ctx)
+    if how is None:
+        return
+    for k in _hook_skip_env(env, ctx, "claude"):
+        _tick()  # E8: budget check per iteration
+        v.add(DENY, f"it starts Tess's dashboard launcher ({how}) with {k} set, which skips Tess's "
+                    "hooks in the agents it starts", "agentcli")
+    _launch_verdict(f"it starts Tess's dashboard launcher ({how}), which", "serves a local page that "
+                    "starts headless claude agents in a folder it is given, outside the checks Tess "
+                    "makes on an agent started from the shell", env, v, ctx)
 
 
 _DECLARERS = {"export", "local", "declare", "typeset", "readonly"}
@@ -9394,11 +9717,31 @@ def _check_value_patterns(orig: list, cwd, ctx: "_Ctx", v: Verdict) -> None:
             return
 
 
+def _check_nullglob_lists(root: Path, cwd: "str | None", orig: list, v: Verdict, raw: str,
+                          depth: int, ctx: "_Ctx", upstream) -> None:
+    """Item d as a class (see _nullglob_lists): the simple command checked
+    again, whole, for every word list null-glob word removal can leave. Each
+    reading runs on a copy of the context (its links and the function `cd`s
+    are shared, its variables merged back as possible values)."""
+    lists, many = _nullglob_lists(orig, cwd, ctx)
+    if many and _shift_matters(orig, ctx):
+        v.add(ASK, _NULLGLOB_ASK)
+    done = getattr(ctx, "ng_done", frozenset()) | {id(w) for w in orig}
+    for lst in lists:
+        _tick()  # E8: budget check per iteration
+        child = _Ctx(ctx.raw, ctx)
+        child.call_dirs = ctx.call_dirs
+        child.ng_done = done | {id(w) for w in lst}
+        _check_segment(root, cwd, lst, v, raw, depth, child, upstream)
+        _merge_nullgone(ctx, child)
+
+
 def _check_segment(root: Path, cwd: str | None, argv: list, v: Verdict, raw: str, depth: int,
                    ctx: "_Ctx | None" = None, upstream=None):
     ctx = ctx if ctx is not None else _Ctx(raw)
     _tick()
     orig = list(argv)
+    _check_nullglob_lists(root, cwd, orig, v, raw, depth, ctx, upstream)
     res = _resolve(orig)
     env, argv = res.env, res.argv
     for k, val in env.items():
@@ -9409,7 +9752,8 @@ def _check_segment(root: Path, cwd: str | None, argv: list, v: Verdict, raw: str
     if res.chdir is not None and cwd is not None:
         cands, _ = _word_values(res.chdir, cwd, ctx)
         cwd = os.path.normpath(os.path.join(cwd, cands[0][0])) if cands and len(cands) == 1 else None
-    targets, _van_many = _write_targets_wc(argv, orig)
+    targets = _write_targets(argv, orig)
+    cwd_unknown = cwd is None
     if cwd is None:
         # a `cd` earlier in this command (or the tool's working directory) went
         # somewhere Tess cannot resolve
@@ -9430,7 +9774,7 @@ def _check_segment(root: Path, cwd: str | None, argv: list, v: Verdict, raw: str
     _check_alias_use(root, cwd, argv, v, raw, depth, ctx, upstream)
     if not ctx.deferred and _plain_name(argv[0]) in ctx.funcs:
         _call_function(root, cwd, str(argv[0]), argv[1:], v, raw, depth, ctx)
-    if _dynamic(argv[0]) or _braced(argv[0]) or _globbed(argv[0]):
+    if _dynamic(argv[0]) or _braced(argv[0]) or _globbed(argv[0], cwd, ctx):
         return _check_dynamic_program(root, cwd, argv, v, raw, depth, ctx, upstream)
     name = os.path.basename(str(argv[0])).lower()  # macOS finds `GIT` as git
     if name == "hub" or (name.startswith("git-") and name not in _GIT_TOOLS):
@@ -9448,9 +9792,14 @@ def _check_segment(root: Path, cwd: str | None, argv: list, v: Verdict, raw: str
             v.add(ASK, f"the arguments it gives {name} can expand to more combinations than Tess "
                        "checks one by one, so it cannot check them")
             variants = [argv]
-    for var in variants:
-        _tick()  # E8: budget check per iteration
-        _check_program(root, cwd, env, var, orig, v, raw, depth, ctx, upstream, res)
+    prev_unknown = getattr(ctx, "cwd_unknown", False)
+    ctx.cwd_unknown = prev_unknown or cwd_unknown  # unit 2: the folder a child starts in
+    try:
+        for var in variants:
+            _tick()  # E8: budget check per iteration
+            _check_program(root, cwd, env, var, orig, v, raw, depth, ctx, upstream, res)
+    finally:
+        ctx.cwd_unknown = prev_unknown
 
 
 def _check_program(root: Path, cwd: str, env: dict, argv: list, orig: list, v: Verdict, raw: str,
@@ -9459,15 +9808,15 @@ def _check_program(root: Path, cwd: str, env: dict, argv: list, orig: list, v: V
     name = os.path.basename(str(argv[0])).lower()
     if any("\0" in str(a) for a in list(argv) + list(orig or [])):
         v.add(ASK, _NUL_ASK)
-    tgts, van_many = _write_targets_wc(argv, [])
-    if van_many:
-        v.add(ASK, _NULLGLOB_ASK)
-    _check_targets(root, cwd, tgts, v, ctx)
+    _check_targets(root, cwd, _write_targets(argv, []), v, ctx)
     _check_unknown_args(name, argv, v, ctx)
     agent = _agent_name(name)
     if agent:
         _check_agent_cli(root, cwd, agent, argv, orig, env, v, ctx, res)
-    if _STATE.get("codex") and upstream is None and not res.via_xargs and _stdin_source(orig) is None:
+    # A null-glob reading (ctx.ng_done) only adds safety checks: that every
+    # word of a command can vanish does not make it wait for input in Codex.
+    if _STATE.get("codex") and upstream is None and not res.via_xargs and _stdin_source(orig) is None \
+            and not getattr(ctx, "ng_done", None):
         what = _interactive(name, argv, ctx)
         if what:
             v.add(ASK, _INTERACTIVE_ASK.format(what=what))
@@ -9530,6 +9879,17 @@ def _check_program(root: Path, cwd: str, env: dict, argv: list, orig: list, v: V
     if tess_words is not None:
         _check_vault(tess_words, v)
         _check_tessctl_run(env, tess_words, v, ctx, res)
+        tpos0 = [w.lower() for w in tess_words if not w.startswith("-")]
+        # run-3 audit (unit 4): `gate pre-push` with a base or head the caller
+        # chooses runs the ship check (and its receipt step) from that base; the
+        # repository's pre-push hook and CI choose their own. A word only known
+        # at run time could be either option.
+        if tpos0[:2] == ["gate", "pre-push"]:
+            after = tess_words[tess_words.index("pre-push") + 1:] if "pre-push" in tess_words else []
+            if _opt_given(tess_words, ("--base", "--head")) or any(_RUNTIME_TEXT.search(w) for w in after):
+                v.add(ASK, "`tessctl gate pre-push` with a --base or --head you choose runs the ship "
+                           "check from that commit (the pre-push hook and CI pick their own base); "
+                           "run it in your own terminal")
         tpos = [w.lower() for w in tess_words if not w.startswith("-")]
         if tpos[:1] == ["anchor"] and tpos[1:2] in (["accept"], ["init"]):
             v.add(DENY, "only the operator can record Tess's safety files as approved "
@@ -9541,6 +9901,7 @@ def _check_program(root: Path, cwd: str, env: dict, argv: list, orig: list, v: V
             v.add(DENY, f"`tessctl {' '.join(tpos[:2])}` asks you to confirm at your own terminal, "
                         "and in Codex an agent can type into a running command later (write_stdin) "
                         "without Tess seeing it; run this in your own terminal", "operator")
+    _check_gui_launcher(root, cwd, name, argv, env, v, ctx)
     if name in EXTRACTORS:
         _check_extract(root, cwd, argv, v, ctx)
     if name in _SQL_CLIS:
@@ -9582,7 +9943,7 @@ def _check_program(root: Path, cwd: str, env: dict, argv: list, orig: list, v: V
 
 
 _GLOB_PROGRAM_EXTRA = {"python", "python3", "pypy3", "node", "nodejs", "deno", "bun", "perl",
-                       "ruby", "php", "osascript", "hub"}
+                       "ruby", "php", "osascript", "hub", "tess-gui", "tess-gui.mjs"}
 
 
 def _glob_program_names(pat: str) -> list:
@@ -9804,8 +10165,10 @@ def _merge_back(ctx: "_Ctx", child: "_Ctx") -> None:
     """What an `eval` set, kept for the words after it."""
     for n, val in child.vars.items():
         _tick()  # E8: budget check per iteration
-        if ctx.vars.get(n, _UNSET) != val or (n in child.nonopt) != (n in ctx.nonopt):
-            ctx.assign(n, val, ctx.cond_now, nonopt=n in child.nonopt)
+        if ctx.vars.get(n, _UNSET) != val or (n in child.nonopt) != (n in ctx.nonopt) or (
+                n in child.globvars) != (n in ctx.globvars):
+            ctx.assign(n, val, ctx.cond_now, nonopt=n in child.nonopt,
+                       globbed=n in child.globvars)  # C2: keep the GLOB_ASSIGN mark
     ctx.aliases.update(child.aliases)
     ctx.funcs.update(child.funcs)
     ctx.opaque = ctx.opaque or child.opaque
@@ -10318,7 +10681,7 @@ def _walk(root: Path, events: list, i: int, start: frozenset, v: Verdict, cmd: s
                 loopvar = None
                 if kw == "for" and n + 1 < len(x) and _NAME.fullmatch(str(x[n + 1])):
                     loopvar = (str(x[n + 1]), ctx.vars.get(str(x[n + 1]), _UNSET),
-                               str(x[n + 1]) in ctx.nonopt)
+                               str(x[n + 1]) in ctx.nonopt, str(x[n + 1]) in ctx.globvars)
                 stack.append([kw != "{" or pending in ("&&", "||") or piped or nxt == "&", loopvar])
         cond = pending in ("&&", "||") or piped or nxt == "&" or cond0 or any(e[0] for e in stack)
         if lead and lead[-1] in ("for", "select"):
@@ -10341,14 +10704,16 @@ def _close(ctx: "_Ctx", ent: list) -> None:
     before the loop when the list was empty."""
     if ent[1] is None:
         return
-    name, old, old_nonopt = ent[1]
+    name, old, old_nonopt, old_glob = ent[1]
     cur, cur_nonopt = ctx.vars.get(name, _UNSET), name in ctx.nonopt
+    # C2: the value before the loop may come back, and so may its GLOB_ASSIGN mark
+    glob_mark = old_glob or name in ctx.globvars
     if old is _UNSET:
         ctx.vars.pop(name, None)
     else:
         ctx.vars[name] = old
     (ctx.nonopt.add if old_nonopt else ctx.nonopt.discard)(name)
-    ctx.assign(name, None if cur is _UNSET else cur, True, nonopt=cur_nonopt)
+    ctx.assign(name, None if cur is _UNSET else cur, True, nonopt=cur_nonopt, globbed=glob_mark)
 
 
 def _run_segment(root: Path, argv: list, run: frozenset, v: Verdict, cmd: str, depth: int,
@@ -10388,8 +10753,15 @@ def _run_segment(root: Path, argv: list, run: frozenset, v: Verdict, cmd: str, d
     # v1.0.x (Quinn R3): a globbed command word may run a builtin that changes
     # the shell's state (`r?ad x`, `c? .claude`): what it may bind is no longer
     # known, nor is the folder after a `cd` it may be.
-    if res.argv and _globbed(res.argv[0]):
+    if res.argv and _globbed(res.argv[0], one, ctx):
+        # Cyra delta review of a769130 (L1): the builtins the word's own
+        # worst-case patterns can name (`c#d` is `cd` under EXTENDED_GLOB).
+        cands, _ = _word_fields(res.argv[0], one, ctx)
+        pats = [c[0][1] for c in (cands or []) if c and c[0][1]]
         maybe = _glob_builtins(str(res.argv[0]))
+        for pat in pats:
+            _tick()  # E8: budget check per iteration
+            maybe = maybe | _glob_builtins(pat)
         if maybe & _SHELL_STATE_BUILTINS:
             ctx.opaque = True
         if maybe & _CD_BUILTINS:
@@ -10426,7 +10798,7 @@ def _track_vars(orig: list, res: "_Cmd", cwd: str | None, ctx: "_Ctx", cond: boo
         n, value = m.group(1), _sub_word(w, m.end())
         # item e: an unquoted glob in the value means zsh GLOB_ASSIGN expands
         # it when it is assigned; mark the variable so its use is a glob too.
-        ctx._assign_globbed = _value_has_unquoted_glob(value)
+        globbed = _value_has_unquoted_glob(value, cwd, ctx)
         cands, _ = _word_values(value, cwd, ctx, assign=True)
         vals = None if cands is None else [t for t, _p in cands]
         if m.group(2) and vals is not None:  # NAME+=value appends
@@ -10440,7 +10812,7 @@ def _track_vars(orig: list, res: "_Cmd", cwd: str | None, ctx: "_Ctx", cond: boo
                     (k == "var" and t in ctx.nonopt) or (k == "sub" and _NONOPT_SUB.match(t))
                     or (k == "dyn" and t.startswith("#"))))
                 for k, t in getattr(value, "parts", ())))
-        ctx.assign(n, vals, cond, nonopt=nonopt)
+        ctx.assign(n, vals, cond, nonopt=nonopt, globbed=globbed)
     # Assignments hidden in expansions and arithmetic: ${X:=v}, $((X=1)), (( X++ )).
     for w in orig:
         _tick()  # E8: budget check per iteration
@@ -10519,7 +10891,10 @@ def _track_vars(orig: list, res: "_Cmd", cwd: str | None, ctx: "_Ctx", cond: boo
             for w in pos:
                 _tick()  # E8: budget check per iteration
                 cands, _ = _word_fields(w, cwd, ctx)
-                if cands is None or len(cands) != 1 or cond:
+                # Cyra delta review of a769130 (M1 class): a glob is replaced
+                # by the names it matches, or under null-glob by none, so $1,
+                # $2, ... are only known at run time (the shared predicate).
+                if cands is None or len(cands) != 1 or cond or any(_field_globs(t, p) for t, p in cands[0]):
                     vals = None
                     break
                 vals += [t for t, _p in cands[0]]

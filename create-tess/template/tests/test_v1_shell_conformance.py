@@ -193,6 +193,39 @@ def test_worst_profile_globs_an_unquoted_value_in_zsh(gate_env):
     sc._rmtree(work / "substcheck")
 
 
+def test_null_glob_profiles_drop_expanded_brace_and_extended_globs(gate_env):
+    """1.0.0 (a769130 review, M1 and L1): the word kinds the gate now counts as
+    possibly vanishing really vanish in the shells: a no-match glob from an
+    unquoted variable, a command substitution or a brace (bash +nullglob and
+    +worst; zsh +worst, where GLOB_SUBST is on), a brace in zsh +nullglob, and
+    an EXTENDED_GLOB-only form (zsh +worst)."""
+    _gate, pristine, work = gate_env
+    words = {"param": "$p", "subst": "$(printf %s 'zz*.none')", "brace": "{zz,yy}*.none",
+             "ext": "zznone#"}
+    want = {("bash", sc.NULLGLOB_SUFFIX): {"param", "subst", "brace"},
+            ("bash", sc.WORST_SUFFIX): {"param", "subst", "brace"},
+            ("zsh", sc.NULLGLOB_SUFFIX): {"brace"},
+            ("zsh", sc.WORST_SUFFIX): {"param", "subst", "brace", "ext"}}
+    seen = set()
+    for sh in sc.shells():
+        prog, suf = sc._profile_of(sh)
+        kind = "zsh" if "zsh" in os.path.basename(prog) else "bash"
+        if (kind, suf) not in want:
+            continue
+        seen.add((kind, suf))
+        for name, word in words.items():
+            s = sc.fresh_copy(pristine, work / "nullkinds")
+            d = Path(s["T"]) / "k"
+            d.mkdir()
+            # `touch pre WORD post`: a vanished WORD leaves exactly pre and post
+            code, err = sc.run_shell(sh, f"cd '{d}' && p='zz*.none'; touch pre {word} post", s)
+            assert code == 0, (sh, name, err)
+            gone = sorted(os.listdir(d)) == ["post", "pre"]
+            assert gone == (name in want[(kind, suf)]), (sh, name, sorted(os.listdir(d)))
+            sc._rmtree(work / "nullkinds")
+    assert seen == set(want), seen
+
+
 def test_attack_and_everyday_corpus_conforms(gate_env):
     gate, pristine, work = gate_env
     cases = json.loads(CORPUS.read_text(encoding="utf-8"))["cases"]

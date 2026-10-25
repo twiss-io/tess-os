@@ -53,7 +53,10 @@ def sid(request):
 # ---------------------------------------------------------------- review-only
 @pytest.mark.parametrize("cmd,want", [
     (CONSULT, ALLOW),
-    (PLAN, ALLOW),
+    # 1.0.0 run-3 audit (unit 2): plan mode gates tools but does not limit
+    # them; a claude peer is read-only with --tools limited to read tools
+    (PLAN, ASK),
+    ("claude -p 'review this change' --tools Read,Grep,Glob", ALLOW),
     ("codex exec -s workspace-write 'fix it'", DENY),
     ("codex exec --dangerously-bypass-approvals-and-sandbox 'fix it'", DENY),
     ("claude -p --dangerously-skip-permissions 'fix it'", DENY),

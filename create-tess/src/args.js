@@ -13,11 +13,11 @@
 //                                          pass a git URL/path here to opt into a
 //                                          live git fetch instead (see
 //                                          scaffold.js BUNDLED_TEMPLATE_DIR)
-//   template ref   : --template-ref      (env TESS_TEMPLATE_REF; pins a git-URL
-//                                          clone to a tag/branch/SHA — only
-//                                          meaningful alongside an explicit
-//                                          --template-source git opt-in; see
-//                                          scaffold.js resolveTemplateRef())
+//   template ref   : --template-ref      (env TESS_TEMPLATE_REF; the signed
+//                                          Tess OS release tag a git-URL
+//                                          --template-source is fetched at —
+//                                          branches and commits are refused;
+//                                          see git-template-source.js)
 //   target dir     : --target / --dir / first positional
 //   production code: --prod-paths "src,api/**" (written into the policy's
 //                    production rule; unset = leave the placeholder)
@@ -193,11 +193,12 @@ OPTIONS
                                  TESS_TEMPLATE_SOURCE). Default (unset): the
                                  bundled template — a local copy, no network
                                  or git clone involved.
-  --template-ref <tag|branch|sha>  pin a git-URL --template-source to this ref
-                                 (env: TESS_TEMPLATE_REF). Only meaningful
-                                 alongside an explicit --template-source git
-                                 opt-in — a custom source is otherwise cloned
-                                 at its own default branch tip.
+  --template-ref <tag>           the signed Tess OS release tag (for example
+                                 v1.0.0) to fetch an https --template-source
+                                 at (env: TESS_TEMPLATE_REF); its release
+                                 signatures are verified before use. Branches
+                                 and commits are refused (they cannot be
+                                 checked). Only used with --template-source.
   --force                        overwrite a non-empty / existing-install target
   --no-doctor                    skip the post-bake integrity check
   --no-verify                    skip the post-bake verify check

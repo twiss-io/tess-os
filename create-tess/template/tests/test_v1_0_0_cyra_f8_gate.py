@@ -283,17 +283,74 @@ def test_c_neighbours_are_unchanged(world, cmd):
     assert _all(world, cmd) == ALLOW
 
 
-def test_c_the_runtime_hook_itself_still_marks_a_task(world, tmp_path):
-    """The UserPromptSubmit hook (run by Claude Code, not through the gate)
-    still prints nothing, never blocks and starts a fresh budget."""
-    home = tmp_path / "h"
-    home.mkdir()
+# a769130 review (Reid M5): the hook is run as its own process with its input
+# on a pipe, as Claude Code runs it, and the budget folder is redirected to a
+# temporary home inside that process (the gate finds the home from the OS user
+# record, not $HOME, so HOME alone would reach the real ~/.config/tess).
+_HOOK_RUNNER = """
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("tess_gate_hook_under_test", sys.argv[1])
+gate = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(gate)
+gate._os_home = lambda: sys.argv[2]
+sys.exit(gate.main(["--runtime", "claude", "--task-start"]))
+"""
+
+
+def _run_task_start_hook(tmp_path, home, payload):
+    runner = tmp_path / "hook_runner.py"
+    runner.write_text(_HOOK_RUNNER)
     env = {k: v for k, v in os.environ.items() if k not in ("CLAUDECODE", "CODEX_THREAD_ID")}
     env["HOME"] = str(home)
-    r = subprocess.run([sys.executable, "-I", "-B", str(GATE), "--runtime", "claude", "--task-start"],
-                       input=json.dumps({"session_id": "s-f8"}), capture_output=True, text=True,
-                       env=env, cwd=str(world[0]))
-    assert r.returncode == 0 and r.stdout == ""
+    return subprocess.run([sys.executable, "-I", "-B", str(runner), str(GATE), str(home)],
+                          input=json.dumps(payload), capture_output=True, text=True, env=env,
+                          cwd=str(tmp_path))
+
+
+def _spent_budget(home, session):
+    import hashlib
+    d = home / ".config" / "tess" / "agent-budget"
+    d.mkdir(parents=True, mode=0o700)
+    f = d / (hashlib.sha256(session.encode()).hexdigest()[:32] + ".json")
+    f.write_text(json.dumps({"task": "session", "used": 3}) + "\n")
+    f.chmod(0o600)
+    return f
+
+
+_PROMPT = {"hook_event_name": "UserPromptSubmit", "prompt": "next task", "session_id": "s-f8",
+           "cwd": "/x", "transcript_path": "/x/t.jsonl"}
+
+
+def test_c_the_runtime_hook_itself_still_marks_a_task(world, tmp_path):
+    """The UserPromptSubmit hook (run by Claude Code, not through the gate)
+    prints nothing, never blocks, and starts a fresh budget for a payload
+    shaped as Claude Code sends it."""
+    home = tmp_path / "h"
+    counter = _spent_budget(home, "s-f8")
+    r = _run_task_start_hook(tmp_path, home, _PROMPT)
+    assert r.returncode == 0 and r.stdout == "" and "no new task marked" not in r.stderr, r.stderr
+    doc = json.loads(counter.read_text())
+    assert doc["used"] == 0 and doc["task"].startswith("prompt:")
+
+
+def test_c_a_payload_the_hook_refuses_keeps_the_spent_budget(world, tmp_path):
+    home = tmp_path / "h"
+    counter = _spent_budget(home, "s-f8")
+    r = _run_task_start_hook(tmp_path, home, {"session_id": "s-f8"})
+    assert r.returncode == 0 and r.stdout == "" and "no new task marked" in r.stderr
+    assert json.loads(counter.read_text())["used"] == 3
+
+
+def test_c_the_marked_task_really_resets_what_the_gate_counts(world, tmp_path, monkeypatch):
+    """After the real hook marks a task, the gate allows agents again."""
+    home = tmp_path / "h"
+    _spent_budget(home, "s-f8")
+    monkeypatch.setattr(G, "_os_home", lambda: str(home), raising=False)
+    data = {"tool_name": "Bash", "cwd": str(world[0]), "session_id": "s-f8", "permission_mode": "default",
+            "tool_input": {"command": "codex exec -s read-only 'review src'"}}
+    assert G.decide(data, world[0], "claude")[0] == "ask"           # the budget is spent
+    _run_task_start_hook(tmp_path, home, _PROMPT)
+    assert (G.decide(data, world[0], "claude")[0] or "allow") == "allow"
 
 
 # ================================================ d. process substitution and U1
