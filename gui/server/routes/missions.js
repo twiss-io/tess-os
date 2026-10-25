@@ -112,6 +112,13 @@ export async function handleCreateMission(ctx, req, res) {
     return;
   }
 
+  // A launcher started from inside an AI agent session never launches a
+  // mission: the request may come from that agent, not an operator's click.
+  if (ctx.agentSession) {
+    sendJson(res, 403, { error: 'mission launch is refused inside an agent session' });
+    return;
+  }
+
   const prompt = typeof body.prompt === 'string' ? body.prompt.trim() : '';
   if (!prompt) {
     sendJson(res, 400, { error: 'prompt is required' });
@@ -164,7 +171,7 @@ export async function handleCreateMission(ctx, req, res) {
   const onExit = (info) => finishMission(ctx, mission, info ?? {});
 
   try {
-    mission.proc = ctx.deps.runMission({ dir: ctx.dir, prompt, onEvent, onExit });
+    mission.proc = ctx.deps.runMission({ dir: ctx.dir, projectRoot: ctx.projectRoot, prompt, onEvent, onExit });
   } catch (err) {
     console.error('tess-gui: failed to start mission:', err?.message ?? err);
     finishMission(ctx, mission, { code: null });

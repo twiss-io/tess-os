@@ -5,11 +5,17 @@
 // Copyright 2026 Twiss
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, chmodSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, chmodSync, rmSync, existsSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 
-import { runMission, getClaudeVersion, isCompatible, MIN_CLI_VERSION } from '../server/claude-runner.js';
+import {
+  runMission,
+  getClaudeVersion,
+  isCompatible,
+  MIN_CLI_VERSION,
+  READ_ONLY_ARGS,
+} from '../server/claude-runner.js';
 
 function tmpDir() {
   return mkdtempSync(join(tmpdir(), 'tess-gui-runner-'));
@@ -33,8 +39,12 @@ function collectRun(bin, opts = {}) {
   const done = new Promise((resolve) => {
     resolveDone = resolve;
   });
+  // The child's working folder must sit inside the project root, so every
+  // run names both; by default the fake binary's own temp folder is both.
+  const dir = opts.dir ?? dirname(bin);
   const { pid, stop } = runMission({
-    dir: opts.dir,
+    dir,
+    projectRoot: opts.projectRoot ?? dir,
     prompt: opts.prompt ?? 'hello',
     claudeBin: bin,
     onEvent: (e) => events.push(e),
@@ -82,10 +92,112 @@ test('runMission: never passes the prompt through a shell — metacharacters arr
     const { events, done } = collectRun(bin, { prompt: payload });
     await done;
     const argvEvents = events.filter((e) => e.type === 'argv').map((e) => e.value);
-    assert.deepEqual(argvEvents, ['-p', payload, '--output-format', 'stream-json', '--verbose']);
+    assert.deepEqual(argvEvents.slice(0, 2), ['-p', payload]);
+    assert.equal(argvEvents.filter((a) => a === payload).length, 1);
     assert.equal(existsSync(sentinel), false, 'shell metacharacters in the prompt must never execute');
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// Audit hardening C4: a dashboard mission starts the child in a read-only
+// tool form, never the un-narrowed default. The form is one the gate itself
+// counts as provably read-only for claude (plan mode; built-in tools limited
+// to Read/Grep/Glob; no MCP servers), and the prompt comes before --tools so
+// it can never be read as a tool name.
+function argvOf(events) {
+  return events.filter((e) => e.type === 'argv').map((e) => e.value);
+}
+
+function valueAfter(argv, flag) {
+  const i = argv.indexOf(flag);
+  return i === -1 ? undefined : argv[i + 1];
+}
+
+test('runMission: the child always starts in the read-only form (plan mode, Read/Grep/Glob only, no MCP servers)', async () => {
+  const dir = tmpDir();
+  const bin = writeFakeBin(
+    dir,
+    'claude',
+    `for (const a of process.argv.slice(2)) {
+       process.stdout.write(JSON.stringify({type:'argv', value:a}) + '\\n');
+     }`,
+  );
+  try {
+    const { events, done } = collectRun(bin, { prompt: 'summarise the roster' });
+    await done;
+    const argv = argvOf(events);
+    assert.deepEqual(argv.slice(0, 2), ['-p', 'summarise the roster']);
+    assert.equal(valueAfter(argv, '--permission-mode'), 'plan');
+    assert.equal(valueAfter(argv, '--tools'), 'Read,Grep,Glob');
+    assert.ok(argv.includes('--strict-mcp-config'), 'project or user MCP servers must not load');
+    assert.ok(argv.indexOf('--tools') > argv.indexOf('summarise the roster'), 'the prompt precedes --tools');
+    assert.ok(argv.indexOf('--tools') + 2 === argv.length || argv[argv.indexOf('--tools') + 2].startsWith('--'),
+      '--tools is followed by another option or the end, so nothing else is read as a tool name');
+    for (const wide of ['--dangerously-skip-permissions', '--allow-dangerously-skip-permissions',
+      '--allowedTools', '--allowed-tools', '--add-dir', '--mcp-config', '--settings']) {
+      assert.equal(argv.includes(wide), false, `${wide} must never be passed`);
+    }
+    assert.equal(valueAfter(argv, '--output-format'), 'stream-json');
+    assert.ok(argv.includes('--verbose'));
+    assert.deepEqual(READ_ONLY_ARGS, ['--permission-mode', 'plan', '--strict-mcp-config', '--tools', 'Read,Grep,Glob']);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('runMission: a working folder outside the project root is refused and no child starts', () => {
+  const root = tmpDir();
+  const outside = tmpDir();
+  const sentinel = join(outside, 'started');
+  const bin = writeFakeBin(outside, 'claude', `require('fs').writeFileSync(${JSON.stringify(sentinel)}, 'x');`);
+  try {
+    assert.throws(
+      () => runMission({ dir: outside, projectRoot: root, prompt: 'x', claudeBin: bin }),
+      /outside the project root/,
+    );
+    assert.throws(
+      () => runMission({ dir: join(root, '..'), projectRoot: root, prompt: 'x', claudeBin: bin }),
+      /outside the project root/,
+    );
+    assert.throws(() => runMission({ prompt: 'x', claudeBin: bin }), /project root/);
+    assert.equal(existsSync(sentinel), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(outside, { recursive: true, force: true });
+  }
+});
+
+test('runMission: an in-root link to a folder outside the project root is refused', () => {
+  const root = tmpDir();
+  const outside = tmpDir();
+  const sentinel = join(outside, 'started');
+  const bin = writeFakeBin(outside, 'claude', `require('fs').writeFileSync(${JSON.stringify(sentinel)}, 'x');`);
+  symlinkSync(outside, join(root, 'linked'));
+  try {
+    assert.throws(
+      () => runMission({ dir: join(root, 'linked'), projectRoot: root, prompt: 'x', claudeBin: bin }),
+      /outside the project root/,
+    );
+    assert.equal(existsSync(sentinel), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(outside, { recursive: true, force: true });
+  }
+});
+
+test('runMission: a working folder inside the project root starts the child there', async () => {
+  const root = tmpDir();
+  const sub = join(root, 'sub');
+  mkdirSync(sub);
+  const bin = writeFakeBin(root, 'claude', `process.stdout.write(JSON.stringify({type:'cwd', value:process.cwd()}) + '\\n');`);
+  try {
+    const { events, done } = collectRun(bin, { dir: sub, projectRoot: root });
+    await done;
+    const cwd = events.find((e) => e.type === 'cwd');
+    assert.ok(cwd && cwd.value.endsWith(join('', 'sub')), JSON.stringify(events));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });
 

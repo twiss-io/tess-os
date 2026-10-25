@@ -38,7 +38,9 @@ async function startServer(opts = {}) {
     MIN_CLI_VERSION: '2.0.0',
     ...opts.deps,
   };
-  const instance = await start({ port: 0, dir, deps, paths });
+  // The fixture folder is its own project root, and the server sees a clean
+  // environment (no agent-session markers) unless a test passes one.
+  const instance = await start({ port: 0, dir, projectRoot: opts.projectRoot ?? dir, env: opts.env ?? {}, deps, paths });
   servers.push(instance);
   return { ...instance, dir };
 }

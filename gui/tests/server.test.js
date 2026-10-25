@@ -10,6 +10,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import http from 'node:http';
+import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 import { start, resolveStaticPath, staticMimeType } from '../server/index.js';
@@ -47,7 +48,9 @@ async function makeInstanceDir() {
 const servers = [];
 async function startServer(opts = {}) {
   const dir = opts.dir ?? (await makeInstanceDir());
-  const instance = await start({ port: 0, dir, deps: fakeDeps, ...opts });
+  // The fixture folder is its own project root, and the server sees a clean
+  // environment (no agent-session markers) unless a test passes one.
+  const instance = await start({ port: 0, dir, projectRoot: dir, env: {}, deps: fakeDeps, ...opts });
   servers.push(instance);
   return instance;
 }
@@ -243,3 +246,131 @@ test('request errors never crash the process and always produce a JSON error bod
   const body = await res.json();
   assert.equal(body.error, 'not found');
 });
+
+
+// ---------------------------------------------------------------------------
+// Audit hardening C4: working-folder confinement and agent-session refusals.
+// ---------------------------------------------------------------------------
+
+// A start() that should be refused: if it wrongly resolves, close the
+// server so the test fails instead of leaving a listener behind.
+async function assertStartRefused(opts, pattern) {
+  let instance = null;
+  await assert.rejects(
+    (async () => {
+      instance = await start(opts);
+    })(),
+    pattern,
+  );
+  if (instance) await instance.close();
+}
+
+test('start() refuses a working folder outside the project root', async () => {
+  const root = await makeInstanceDir();
+  const outside = await makeInstanceDir();
+  await assertStartRefused({ port: 0, dir: outside, projectRoot: root, env: {}, deps: fakeDeps }, /outside the project root/);
+  await assertStartRefused({ port: 0, dir: path.join(root, '..'), projectRoot: root, env: {}, deps: fakeDeps }, /outside the project root/);
+});
+
+test('start() refuses an in-root link to a folder outside the project root', async () => {
+  const root = await makeInstanceDir();
+  const outside = await makeInstanceDir();
+  await fs.symlink(outside, path.join(root, 'linked'));
+  await assertStartRefused({ port: 0, dir: path.join(root, 'linked'), projectRoot: root, env: {}, deps: fakeDeps }, /outside the project root/);
+});
+
+test('start() defaults the project root to the instance that holds the gui package', async () => {
+  const guiDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+  const instanceRoot = path.dirname(guiDir);
+  const inside = await startServer({ dir: instanceRoot, projectRoot: undefined });
+  assert.ok(inside.port > 0);
+  const outside = await makeInstanceDir();
+  await assertStartRefused({ port: 0, dir: outside, env: {}, deps: fakeDeps }, /outside the project root/);
+});
+
+function postMission(port, token, body) {
+  return fetch(`http://127.0.0.1:${port}/api/missions?token=${token}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
+for (const marker of ['TESS_DISPATCHED', 'TESS_CONSULT_DEPTH', 'CLAUDECODE', 'CLAUDE_CODE_ENTRYPOINT',
+  'CODEX_THREAD_ID', 'CODEX_SANDBOX', 'CODEX_SANDBOX_NETWORK_DISABLED']) {
+  test(`mission launch is refused when the launcher runs inside an agent session (${marker})`, async () => {
+    let calls = 0;
+    const deps = { ...fakeDeps, runMission: () => { calls += 1; return { pid: 1, stop() {} }; } };
+    const { port, token } = await startServer({ env: { [marker]: '1' }, deps });
+    const res = await postMission(port, token, { prompt: 'hello' });
+    assert.equal(res.status, 403);
+    const body = await res.json();
+    assert.match(body.error, /agent session/);
+    assert.equal(calls, 0, 'runMission must never be reached');
+  });
+}
+
+test('mission launch outside an agent session reaches runMission with only the confined folder and prompt', async () => {
+  const calls = [];
+  const deps = {
+    ...fakeDeps,
+    runMission: (args) => {
+      calls.push(args);
+      return { pid: 1, stop() {} };
+    },
+  };
+  const dir = await makeInstanceDir();
+  const { port, token } = await startServer({ dir, env: {}, deps });
+  const res = await postMission(port, token, {
+    prompt: 'hello',
+    permissionMode: 'acceptEdits',
+    tools: 'Bash,Edit',
+    dir: os.tmpdir(),
+  });
+  assert.equal(res.status, 201);
+  assert.equal(calls.length, 1);
+  const realDir = await fs.realpath(dir);
+  assert.deepEqual(Object.keys(calls[0]).sort(), ['dir', 'onEvent', 'onExit', 'projectRoot', 'prompt']);
+  assert.equal(await fs.realpath(calls[0].dir), realDir);
+  assert.equal(await fs.realpath(calls[0].projectRoot), realDir);
+  assert.equal(calls[0].prompt, 'hello');
+});
+
+// The launcher refuses --print-token inside an agent session: it exits
+// before starting the server and never prints the tokened URL.
+function runLauncher(args, env, timeoutMs = 8000) {
+  const launcher = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'tess-gui.mjs');
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, [launcher, ...args], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (c) => { stdout += c; });
+    child.stderr.on('data', (c) => { stderr += c; });
+    const timer = setTimeout(() => {
+      try { process.kill(child.pid, 'SIGTERM'); } catch { /* already gone */ }
+    }, timeoutMs);
+    child.on('close', (code, signal) => {
+      clearTimeout(timer);
+      resolve({ code, signal, stdout, stderr });
+    });
+  });
+}
+
+function cleanEnv() {
+  const env = {};
+  for (const k of ['PATH', 'HOME', 'TMPDIR', 'SYSTEMROOT']) if (process.env[k] !== undefined) env[k] = process.env[k];
+  return env;
+}
+
+for (const marker of ['TESS_DISPATCHED', 'CLAUDECODE', 'CODEX_THREAD_ID']) {
+  test(`--print-token is refused inside an agent session (${marker})`, async () => {
+    const guiDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+    const r = await runLauncher(['--print-token', '--no-open', '--port', '0', '--dir', guiDir],
+      { ...cleanEnv(), [marker]: '1' });
+    assert.equal(r.signal, null, 'the launcher must exit on its own, not keep serving');
+    assert.notEqual(r.code, 0);
+    assert.doesNotMatch(r.stdout + r.stderr, /token=/);
+    assert.doesNotMatch(r.stdout, /dashboard running/);
+    assert.match(r.stderr, /agent session/);
+  });
+}
