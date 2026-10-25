@@ -144,9 +144,10 @@ def test_lock_check_ordinary_tamper_has_no_core_internal_annotation(project, run
 #    base_sha entry the same way `cmd_doctor`'s own predicate does, instead
 #    of skipping it outright. Harmless for the exit code today (the staged
 #    branch is a no-op for blocking status either way — see
-#    tests/test_agents_md_template_lock_wiring.py's own
-#    test_lock_check_still_skips_staged_entries_with_no_base_sha for that
-#    outcome-level guarantee); this test pins the STRUCTURE — that
+#    test_lock_check_still_exempts_truly_uncheckable_entries below for the
+#    CLI-level guarantee; this test also asserts the entry stays out of
+#    `lock --check`'s output, as the deleted twin in
+#    test_agents_md_template_lock_wiring.py did); this test pins the STRUCTURE — that
 #    `doctor_check_file` is genuinely invoked for this entry by `cmd_lock`,
 #    not merely that the exit code happens to still be 0 — so a future
 #    change to the staged branch's failure semantics can't silently apply to
@@ -154,7 +155,7 @@ def test_lock_check_ordinary_tamper_has_no_core_internal_annotation(project, run
 # ---------------------------------------------------------------------------
 
 def test_lock_check_staged_no_base_sha_falls_through_to_doctor_check_file(
-    project, monkeypatch
+    project, monkeypatch, capsys
 ):
     project.files[".tess/core/personas/staged-fixture.md"] = {
         "status": "staged",
@@ -177,6 +178,10 @@ def test_lock_check_staged_no_base_sha_falls_through_to_doctor_check_file(
     with pytest.raises(SystemExit) as ei:
         project.mod.cmd_lock(ns(check=True, regen=False), project.root)
     assert ei.value.code == 0
+    # 1.0.0 (Reid f8 review, M2): the outcome the deleted twin asserted.
+    # Falling through must never flag (print) the uncheckable entry.
+    out = capsys.readouterr()
+    assert "staged-fixture.md" not in out.out + out.err
 
     assert ".tess/core/personas/staged-fixture.md" in calls, (
         "lock --check skipped the staged/no-base_sha entry outright instead "
