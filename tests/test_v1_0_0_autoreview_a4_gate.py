@@ -226,3 +226,64 @@ def test_b_the_field_itself_is_unreadable_to_the_path_checks(world, monkeypatch)
     assert G._split_fields([("(a|b)", "[(]a|b[)]", False, False)], " \t\n") == [("(a|b)", None)]
     monkeypatch.setattr(G, "_check_value_patterns", lambda *a, **k: None)
     assert _all(world, "X='(CLAUDE|x).md'; rm -f $X") in (ASK, DENY)
+
+
+# ================================ d. null-glob word removal (Cyra, a4113f7 review)
+# A glob that matches nothing vanishes under NULL_GLOB / nullglob, so the next
+# word moves into the option-argument or operand slot the gate bound by position.
+D_REFUSED = [
+    "curl -o *.nomatch .claude/settings.json",
+    "wget -O *.none .claude/hooks/tess-gate.py",
+    "sort -o *.none .claude/settings.json",
+    "openssl req -out *.none .tess/tess.lock",
+    "tar czf *.none .claude",
+]
+
+
+@pytest.mark.parametrize("cmd", D_REFUSED)
+def test_d_a_vanishing_glob_cannot_move_a_protected_path_into_a_write_slot(world, cmd):
+    assert _all(world, cmd) == DENY
+
+
+def test_d_more_vanishing_globs_than_tess_checks_asks(world):
+    assert _all(world, "cp a* b* c* d* e* f* g* src/a.py") == ASK
+
+
+D_EVERYDAY = [
+    "curl -o out.json https://example.invalid/x",
+    "curl -o *.nomatch https://example.invalid/x",
+    "sort -o src/out.txt src/a.py",
+    "cp src/a.py web/dist/",
+    "cp a* b* src/a.py",
+    "tar czf backup.tgz src",
+]
+
+
+@pytest.mark.parametrize("cmd", D_EVERYDAY)
+def test_d_neighbours_are_unchanged(world, cmd):
+    assert _all(world, cmd) == ALLOW
+
+
+# ======================================= e. GLOB_ASSIGN (Cyra, a4113f7 review)
+E_REFUSED = [
+    "X=.cla*/hooks/tess-gate.py; cp src/a.py \"$X\"",
+    "X=.cla*/hooks/tess-gate.py; rm -f \"$X\"",
+    "X=.cla?de/settings.json; cp src/a.py \"$X\"",
+]
+
+
+@pytest.mark.parametrize("cmd", E_REFUSED)
+def test_e_a_glob_assigned_value_is_a_pattern_at_a_quoted_use(world, cmd):
+    assert _all(world, cmd) == DENY
+
+
+E_EVERYDAY = [
+    "X=src/*.py; cp src/a.py \"$X\"",
+    "X=src/a.py; cp src/a.py \"$X\"",
+    "X='.cla*/x'; echo \"$X\"",
+]
+
+
+@pytest.mark.parametrize("cmd", E_EVERYDAY)
+def test_e_neighbours_are_unchanged(world, cmd):
+    assert _all(world, cmd) == ALLOW
