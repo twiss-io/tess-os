@@ -159,13 +159,14 @@ CAP_ASKS = [
     "git -c a* b* c* d* e* f* g* status",
     "pytest a* b* c* d* e* f* g*",      # pytest options take values (--basetemp DIR)
     "f() { :; }; f a* b* c* d* e* f* g*",
+    "wc -l a* b* c* d* e* f* g*",        # any option disqualifies the shortcut (fail closed)
 ]
 CAP_READ_ONLY = [
     "ls *.a *.b *.c *.d *.e *.f *.g",
     "echo a* b* c* d* e* f* g*",
     "cat a* b* c* d* e* f* g*",
     "grep x a* b* c* d* e* f* g*",
-    "wc -l a* b* c* d* e* f* g*",
+    "wc a* b* c* d* e* f* g*",
     "git add a* b* c* d* e* f* g*",
     "echo $a $b $c $d $e $f $g",
 ]

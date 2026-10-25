@@ -545,7 +545,7 @@ def protected_hit(root: Path, cwd: str, path: str) -> str | None:
         return "scripts/<module> (imported by scripts/tess at every session start)"
     # A home directory inside the project (unusual) still has its control files.
     return _glob_hit(rel, tuple(sorted(_security_tier_paths(root))) + PROTECTED_GLOBS) or \
-        _nested_tess_hit(rel) or control_file_hit(root, cwd, path)
+        _nested_tess_hit(rel) or _nested_git_hit(root, rel) or control_file_hit(root, cwd, path)
 
 
 # run-3 audit (unit 5): Tess's control folder is protected at any depth, not
@@ -554,6 +554,17 @@ def protected_hit(root: Path, cwd: str, path: str) -> str | None:
 # it; the Codex hook also refuses a nearest lock that is not at the top of its
 # repository (.codex/config.toml).
 _TESS_DIR_GLOBS = tuple(g for g in PROTECTED_GLOBS if g.startswith(".tess/"))
+
+
+def _nested_git_hit(root: Path, rel: str) -> str | None:
+    """A nested `.git` (folder or file) next to a nested `.tess/`: it would
+    make that copy the top of a repository, the root the hooks look for."""
+    parts = rel.split("/")
+    for i in range(1, len(parts)):
+        _tick()  # E8: budget check per iteration
+        if parts[i].lower() == ".git" and os.path.isdir(os.path.join(str(root), *parts[:i], ".tess")):
+            return f".git next to a nested copy of .tess/ under {'/'.join(parts[:i])}/"
+    return None
 
 
 def _nested_tess_hit(rel: str) -> str | None:
@@ -5597,8 +5608,7 @@ def _nullglob_lists(orig: list, cwd: "str | None", ctx: "_Ctx") -> tuple:
 # after the subcommand (before it, a word can move into an option's value).
 _SHIFT_SAFE = (_READONLY_PROGRAMS - {"cd", "pushd", "popd", "export", "set", "unset", "read", "for",
                                      "local", "declare", "typeset", "readonly"}) | {
-    "less", "more", "file", "du", "sort", "cut", "tr", "nl", "md5", "md5sum", "shasum",
-    "sha256sum", "cmp"}
+    "file", "du", "sort", "cut", "tr", "nl", "md5", "md5sum", "shasum", "sha256sum", "cmp"}
 _GIT_SHIFT_SAFE = {"add", "stage", "status", "diff", "log", "show", "ls-files", "grep", "blame"}
 
 
@@ -5616,8 +5626,10 @@ def _shift_matters(orig: list, ctx: "_Ctx") -> bool:
     if name in ctx.funcs or name in ctx.aliases or res.env:
         return True
     if name in _SHIFT_SAFE:
-        # a sort -o / output option would be a write slot
-        return name == "sort" and any(str(a).startswith(("-o", "--output")) for a in argv[1:])
+        # automated review of 2680d79: fail closed. Any option at all (grouped
+        # short options, abbreviated long ones, a log or output file) may be a
+        # slot a moved word lands in, so only option-free word lists are safe.
+        return any(str(a).startswith("-") and str(a) != "-" for a in argv[1:])
     if name == "git":
         words = [str(a) for a in argv[1:]]
         k = next((i for i, w in enumerate(words) if not w.startswith("-")), None)
@@ -9598,6 +9610,11 @@ _PKG_MANAGERS = {"npm", "pnpm", "yarn", "bun"}
 _PKG_START = {"start", "restart"}
 _PKG_RUN = {"run", "run-script", "rum", "urn"}
 _PKG_DIR_OPTS = {"--prefix", "-C", "--dir", "--cwd"}
+# automated review of 2680d79: workspace and filter selectors pick a package
+# by folder or name (npm -w/--workspace, pnpm -F/--filter, yarn workspace);
+# the all-packages forms include gui/.
+_PKG_SEL_OPTS = {"-w", "--workspace", "-F", "--filter"}
+_PKG_ALL_OPTS = {"-ws", "--workspaces", "-r", "--recursive", "--include-workspace-root"}
 
 
 def _names_file(word, cwd, ctx: "_Ctx", base: str) -> bool:
@@ -9621,33 +9638,95 @@ def _is_gui_dir(root: Path, here: "str | None") -> bool:
         os.path.join(full, "bin", _GUI_SCRIPT))
 
 
+def _gui_ident(root: Path):
+    """(st_dev, st_ino) of the launcher script, or None."""
+    return _stat_id(os.path.join(str(root), "gui", "bin", _GUI_SCRIPT))
+
+
+def _names_launcher(root: Path, cwd, word, ctx: "_Ctx") -> bool:
+    """`word` names the launcher by file identity (a link or another name for
+    the same file counts), or by its file name."""
+    if _names_file(word, cwd, ctx, _GUI_SCRIPT):
+        return True
+    ident = _gui_ident(root)
+    if ident is None or (isinstance(word, _Word) and (word.op or word.fd)):
+        return False
+    vals, _ = _word_values(word, cwd, ctx)
+    for text, pat in vals or []:
+        _tick()  # E8: budget check per iteration
+        for path in (_glob(cwd, pat) if pat else [text]):
+            _tick()  # E8: budget check per iteration
+            full = os.path.join(cwd or str(root), os.path.expanduser(str(path)))
+            if _stat_id(full) == ident:
+                return True
+    return False
+
+
+def _pkg_selects_gui(root: Path, cwd, val: str) -> bool:
+    """A workspace / filter selector value that can pick the gui package: its
+    folder (by path), its package name, a glob or a value only known at run
+    time."""
+    if not val or _RUNTIME_TEXT.search(val) or "{" in val:
+        return True
+    name = "tess-gui"
+    try:
+        name = json.loads((Path(str(root)) / "gui" / "package.json").read_text("utf-8")).get("name", name)
+    except (OSError, ValueError, AttributeError):
+        pass
+    bare = val.lstrip("!").lstrip("./").rstrip("/")
+    if bare in (name, "gui") or val.lstrip("!") in ("...", "^...") or bare.startswith(("gui...", name + "...")):
+        return True
+    return _is_gui_dir(root, os.path.join(cwd or str(root), os.path.expanduser(val)))
+
+
 def _gui_launch(root: Path, cwd: "str | None", name: str, argv: list, ctx: "_Ctx") -> "str | None":
     """How this program would start the tess-gui launcher, or None."""
     words = [str(a) for a in argv[1:]]
-    if name in (_GUI_BIN, _GUI_SCRIPT):
+    if name in (_GUI_BIN, _GUI_SCRIPT) or (argv and _names_launcher(root, cwd, argv[0], ctx)):
         return f"`{name}`"
     if name in _NODE_RUNNERS:
-        if any(_names_file(a, cwd, ctx, _GUI_SCRIPT) for a in argv[1:]):
+        if any(_names_launcher(root, cwd, a, ctx) for a in argv[1:]):
             return f"`{name} .../{_GUI_SCRIPT}`"
+        # a module script from outside the project could be any launcher
+        for a in argv[1:]:
+            _tick()  # E8: budget check per iteration
+            t = str(a)
+            if t.startswith("-"):
+                continue
+            if t.lower().endswith(".mjs") and _rel_to_root(root, cwd or str(root), t) is None:
+                return f"`{name}` running a module script from outside this project"
+            break
         if "--run" in words and words[words.index("--run") + 1:words.index("--run") + 2] in (
                 ["start"], ["restart"]) and _is_gui_dir(root, cwd):
             return f"`{name} --run start` in gui/"
     if name not in _PKG_MANAGERS:
         return None
-    here, i, pos = cwd, 0, []
+    here, i, pos, picked = cwd, 0, [], False
     while i < len(words):
         _tick()  # E8: budget check per iteration
         w = words[i]
         opt, eq, val = w.partition("=")
-        if opt in _PKG_DIR_OPTS:
+        if opt in _PKG_DIR_OPTS or opt in _PKG_SEL_OPTS:
             val = val if eq else (words[i + 1] if i + 1 < len(words) else "")
             i += 1 if eq else 2
-            if val:
+            if opt in _PKG_SEL_OPTS:
+                picked = picked or _pkg_selects_gui(root, cwd, val)
+            elif val:
                 here = os.path.join(cwd or str(root), os.path.expanduser(val))
             continue
-        if not w.startswith("-"):
+        if opt in _PKG_ALL_OPTS:
+            picked = picked or os.path.isfile(os.path.join(str(root), "gui", "bin", _GUI_SCRIPT))
+        elif not w.startswith("-"):
             pos.append(w)
         i += 1
+    if name == "yarn" and pos[:1] == ["workspace"] and len(pos) > 1:
+        picked = picked or _pkg_selects_gui(root, cwd, pos[1])
+        pos = pos[2:]
+    elif name == "yarn" and pos[:2] == ["workspaces", "foreach"]:
+        picked = True
+        pos = pos[2:]
+    if picked:
+        here = os.path.join(str(root), "gui")
     if pos[:2] in (["exec", _GUI_BIN], ["x", _GUI_BIN], ["dlx", _GUI_BIN]):
         return f"`{name} {pos[0]} {_GUI_BIN}`"
     if not pos or not _is_gui_dir(root, here):
@@ -9656,6 +9735,110 @@ def _gui_launch(root: Path, cwd: "str | None", name: str, argv: list, ctx: "_Ctx
             pos[1] in _PKG_START or _RUNTIME_TEXT.search(pos[1]))):
         return f"`{name} {' '.join(pos[:2])}` in gui/"
     return None
+
+
+# automated review of 2680d79 (item 1): a path check sees only the names a
+# command writes, not a tree that arrives whole. A recursive copy, move or
+# extraction into the project, or a clone, worktree or submodule there, asks
+# when what arrives can hold a `.tess/` or `.claude/hooks/` folder at any
+# depth (or Tess cannot list it), so a nested copy of Tess's control files
+# cannot be planted that way either.
+_TREE_LIMIT = 20000
+
+
+def _tree_plants(names) -> bool:
+    for n in names:
+        _tick()  # E8: budget check per iteration
+        parts = [x.lower() for x in str(n).replace(os.sep, "/").split("/") if x not in ("", ".")]
+        for k, part in enumerate(parts):
+            _tick()  # E8: budget check per iteration
+            if part == ".tess" or (part == ".claude" and parts[k + 1:k + 2] == ["hooks"]):
+                return True
+    return False
+
+
+def _source_plants(cwd: str, src: str, dest_rel: str) -> bool:
+    """A copy of `src` to the project path `dest_rel` can create a `.tess/` or
+    `.claude/hooks/` folder (or Tess cannot list what it copies). Both ways a
+    folder copy lands are read: into dest/<name>/... and as dest/...."""
+    if _remote(src):
+        return True
+    full = os.path.join(cwd, os.path.expanduser(src)).rstrip("/") or "/"
+    if not os.path.isdir(full):
+        return not os.path.lexists(full)  # a source only there at run time
+    names = _tree_names(full, _TREE_LIMIT)
+    if names is None:
+        return True
+    base = os.path.basename(full)
+    for n in names:
+        _tick()  # E8: budget check per iteration
+        if _tree_plants([f"{dest_rel}/{base}/{n}", f"{dest_rel}/{n}"]):
+            return True
+    return _tree_plants([f"{dest_rel}/{base}"])
+
+
+def _check_tree_arrival(root: Path, cwd: str, name: str, argv: list, v: Verdict, ctx: "_Ctx") -> None:
+    def dests(path_word) -> "list | None":
+        """The project paths a destination word names ([] when none is in
+        the project); None when it is only known at run time."""
+        vals, _ = _word_values(path_word, cwd, ctx)
+        if vals is None:
+            return None
+        out = []
+        for t, _p in vals:
+            _tick()  # E8: budget check per iteration
+            if not _remote(str(t)):
+                rel = _rel_to_root(root, cwd, str(t))
+                if rel is not None:
+                    out.append(rel)
+        return out
+
+    why = None
+    copier = _writer_name(name) if _writer_name(name) in ("cp", "mv", "rsync") else (
+        "ditto" if name == "ditto" else None)
+    if copier:
+        rec, target, srcs = _copy_plan(copier, _operands(argv[1:]))
+        where = dests(target) if rec and target is not None else []
+        if where is None:
+            where = [""]  # a destination only known at run time: the source tree alone decides
+        for w in srcs if where else []:
+            _tick()  # E8: budget check per iteration
+            vals, _ = _word_values(w, cwd, ctx)
+            paths = [] if vals is None else [p for t, pat in vals
+                                             for p in (_glob(cwd, pat) if pat else [t])]
+            if vals is None or not paths or any(_source_plants(cwd, str(p), d.rstrip("/"))
+                                                for p in paths for d in where):
+                why = f"`{name}` brings a whole folder into this project"
+                break
+    elif name in EXTRACTORS:
+        for dest, archive, odd in _extract_plans(argv, cwd):
+            _tick()  # E8: budget check per iteration
+            if _rel_to_root(root, cwd, dest) is None:
+                continue
+            members = None if odd or archive is None else _archive_members(archive, name)
+            if members is None or _tree_plants(members):
+                why = f"`{name}` extracts an archive into this project"
+                break
+    elif name == "git":
+        words = [str(a) for a in argv[1:]]
+        pos = [w for w in words if not w.startswith("-")]
+        sub = pos[:1]
+        if sub == ["clone"] and len(pos) > 1:
+            dest = pos[2] if len(pos) > 2 else os.path.basename(pos[1].rstrip("/")).removesuffix(".git")
+            if _rel_to_root(root, cwd, dest) is not None:
+                why = "`git clone` puts a whole repository into this project"
+        elif pos[:2] in (["worktree", "add"], ["submodule", "add"]):
+            why = f"`git {' '.join(pos[:2])}` puts a whole checkout into this project"
+        elif sub == ["init"]:
+            dest = pos[1] if len(pos) > 1 else "."
+            full = os.path.realpath(os.path.join(cwd, os.path.expanduser(dest)))
+            rel = _rel_to_root(root, cwd, full)
+            if rel not in (None, ".") and os.path.isdir(os.path.join(full, ".tess")):
+                v.add(DENY, "`git init` makes a repository next to a nested copy of Tess's control "
+                            "folder, which would make that copy look like a project root", "protected")
+    if why:
+        v.add(ASK, f"{why}, and what arrives can hold a `.tess/` or `.claude/hooks/` folder (a nested "
+                   "copy of Tess's control files) that Tess cannot check name by name")
 
 
 def _check_gui_launcher(root: Path, cwd: "str | None", name: str, argv: list, env: dict, v: Verdict,
@@ -9902,6 +10085,7 @@ def _check_program(root: Path, cwd: str, env: dict, argv: list, orig: list, v: V
                         "and in Codex an agent can type into a running command later (write_stdin) "
                         "without Tess seeing it; run this in your own terminal", "operator")
     _check_gui_launcher(root, cwd, name, argv, env, v, ctx)
+    _check_tree_arrival(root, cwd, name, argv, v, ctx)
     if name in EXTRACTORS:
         _check_extract(root, cwd, argv, v, ctx)
     if name in _SQL_CLIS:
@@ -11284,6 +11468,33 @@ def _task_start_refusal() -> "tuple[str, dict | None]":
     return "", data
 
 
+def _root_refusal(root: Path) -> str:
+    """automated review of 2680d79 (item 4), the Claude Code twin of the Codex
+    hook's root walk: the project folder the runtime pinned at launch must be
+    the only folder on its path that holds `.tess/tess.lock`, and when git
+    knows the repository, its top. '' when it is."""
+    real = os.path.realpath(str(root))
+    p = os.path.dirname(real)
+    while True:
+        _tick()  # E8: budget check per iteration
+        if os.path.isfile(os.path.join(p, ".tess", "tess.lock")):
+            return (f"another folder above this project ({p}) also holds .tess/tess.lock, so it is "
+                    "not clear which Tess project this is")
+        if p == os.path.dirname(p):
+            break
+        p = os.path.dirname(p)
+    try:
+        r = subprocess.run(["git", "-C", real, "rev-parse", "--show-toplevel"], capture_output=True,
+                           text=True, timeout=5, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    top = r.stdout.strip() if r.returncode == 0 else ""
+    if top and os.path.realpath(top) != real:
+        return (f"this project ({real}) is not the top of its git repository ({top}), so its Tess "
+                "files are a nested copy")
+    return ""
+
+
 def main(argv: list) -> int:
     if "--task-start" in argv:
         # 1.0.0: UserPromptSubmit marks a new task (fresh agent budget). It
@@ -11306,10 +11517,14 @@ def main(argv: list) -> int:
         data = json.loads(sys.stdin.read())
         if not isinstance(data, dict):
             raise ValueError("payload is not an object")
+        refusal = _root_refusal(root)
     except BaseException as exc:  # E8: an interrupted read or a stop signal is a deny too
         _quiet_signals()
         _emit("deny", f"TESS GATE: blocked because the tool-call JSON was unreadable "
                       f"({type(exc).__name__}), so the safety check could not run.")
+        return 0
+    if refusal:
+        _emit("deny", f"TESS GATE: blocked because {refusal}. Start the session in your Tess project.")
         return 0
     try:
         decision, reason = decide(data, root, runtime)

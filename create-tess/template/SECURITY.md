@@ -428,12 +428,12 @@ security reviews; they are stated so nobody relies on a check that is not there.
   checked again for every word list those words could leave behind (a brace or
   a split value counts field by field), and past six such words, or 64 such
   lists, Tess asks (a4113f7 review, item d; a769130 review), unless the
-  command only reads or prints its words, so that a word moving left changes
-  nothing it checks (`echo`, `cat`, `ls`, `grep`, `wc`, `head` and the like,
-  `sort` without `-o`, and `git add`, `status`, `diff`, `log`, `show`,
-  `ls-files`, `grep` and `blame` when every such word comes after the
-  subcommand); a program whose options take values (`pytest --basetemp DIR`)
-  still asks. `set --` with a glob makes `$1`, `$2`, ...
+  command only reads or prints its words and passes no option at all, so
+  that a word moving left changes nothing it checks (`echo`, `cat`, `ls`,
+  `grep`, `wc`, `head`, `sort` and the like, and `git add`, `status`, `diff`,
+  `log`, `show`, `ls-files`, `grep` and `blame` with only value-less flags and
+  every such word after the subcommand); any option, and any other program
+  (`pytest --basetemp DIR`), still asks. `set --` with a glob makes `$1`, `$2`, ...
   a run-time value. What a function body sets under one of those readings is
   kept as a possible value for the words after it, next to the plain
   reading's. An assignment value is globbed under zsh `GLOB_ASSIGN`, so an
@@ -670,7 +670,12 @@ security reviews; they are stated so nobody relies on a check that is not there.
   `tess-gui` bin (also through `npx` or `npm exec`), and `npm start` / `npm
   run start` (or a script name only known at run time), `pnpm`, `yarn` or `bun`
   the same, and `node --run start`, in the gui folder or pointed at it with
-  `--prefix` / `-C` / `--dir` / `--cwd`. Each asks in Claude Code, is refused
+  `--prefix` / `-C` / `--dir` / `--cwd`, or picking it with a workspace or
+  filter selector (`-w`, `--workspace`, `-F`, `--filter`, `yarn workspace`,
+  the all-packages forms; a selector value Tess cannot pin down counts). The
+  script is matched by file identity as well as by name, so a link or a hard
+  link to it counts, and `node` running a `.mjs` file from outside the project
+  asks too. Each asks in Claude Code, is refused
   in Codex and the no-prompt modes, is refused inside a peer call or a nested
   session, is refused with a hook-skipping variable set, and counts one agent
   against the task's budget. `npm test` in gui/ is unaffected. The launcher's
@@ -688,11 +693,22 @@ security reviews; they are stated so nobody relies on a check that is not there.
   and CI choose their own base and are unchanged. Tess's `.tess/` control
   files are protected at any depth, not only at the project root, so a nested
   copy of `.tess/tess.lock` or `.tess/bin/` cannot be planted for a later
-  session started below it, and the Codex hook refuses to run when the nearest
-  folder holding `.tess/tess.lock` is not the top of its git repository (the
-  folder the brain hooks use); outside a git repository it keeps the nearest
-  lock. A nested Tess project inside another Tess project is therefore
-  write-protected from the outer session.
+  session started below it. A tree that arrives whole is checked too: a
+  recursive `cp`, `rsync`, `mv` or `ditto`, or an extraction, into the project
+  asks when what arrives holds a `.tess/` or `.claude/hooks/` folder at any
+  depth or cannot be listed (a source only known at run time, a folder of
+  more than 20,000 names, an archive Tess cannot read), and so does a `git
+  clone`, `git worktree add` or `git submodule add` into the project; a `.git`
+  folder or file next to a nested `.tess/` (also through `git init`) is
+  refused. The Codex hook walks every folder from where Codex runs up to `/`:
+  it refuses to run when more than one of them holds `.tess/tess.lock`, and
+  when the one that does is not the top of a git repository (or git reports
+  no repository there). The Claude Code gate makes the same two checks on the
+  project folder the runtime pinned at launch (`$CLAUDE_PROJECT_DIR`), with
+  one difference: outside any git repository it still runs, because that
+  folder is chosen by the runtime, not found by walking. A nested Tess project
+  inside another Tess project is therefore write-protected from the outer
+  session, and neither hook runs inside it.
 - **Codex runs Tess's gate only when it runs project hooks at all.** In an
   untrusted project, or before the operator approves the Tess hooks in `/hooks`
   (and again after an update changes their hash), Codex runs no Tess hook and only

@@ -216,4 +216,127 @@ def test_u5_codex_hook_refuses_a_nested_lock_below_the_repository_top(tmp_path):
     assert at_top.returncode == 0 and "RAN" in at_top.stdout, at_top.stderr
     # the rendered template says the same
     tpl = (REPO / ".tess" / "core" / "templates" / "agents-md" / "codex-config.toml.tpl").read_text("utf-8")
-    assert "is not the top of its repository" in tpl
+    assert "is not the top of a git repository" in tpl
+
+
+# ============================== automated review of 2680d79 (four MEDIUM items)
+# 1. a tree that arrives whole can carry a nested `.tess/` or `.claude/hooks/`
+TREE_ASKS = [
+    "cp -r .tess sub/",                                  # the folder itself
+    "cp -r /no/such/folder-zz sub/",                     # a source Tess cannot list
+    "cp -r planted sub/",                                # a folder holding a nested copy
+    "rsync -a planted/ sub/",
+    "mv planted sub/",
+    "git clone https://example.invalid/x.git sub/x",
+    "git worktree add sub/wt",
+    "tar -xzf /no/such/archive.tgz -C sub",              # an archive Tess cannot list
+]
+
+
+@pytest.fixture
+def planted(proj):
+    d = proj[0] / "planted" / "deep" / ".tess"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "tess.lock").write_text("x\n")
+    (proj[0] / "sub").mkdir(exist_ok=True)
+    (proj[0] / "plain" / "a").mkdir(parents=True, exist_ok=True)
+    return proj
+
+
+@pytest.mark.parametrize("cmd", TREE_ASKS)
+def test_r1_a_tree_that_can_hold_tess_control_folders_asks(planted, cmd):
+    assert _all(planted, cmd) in (ASK, DENY)
+    assert _all(planted, cmd)[2] == DENY[2]     # Codex refuses
+
+
+def test_r1_git_init_next_to_a_nested_tess_is_refused(planted):
+    assert _all(planted, "git init planted/deep") == DENY
+    assert _all(planted, "echo x > planted/deep/.git") == DENY
+
+
+@pytest.mark.parametrize("cmd", ["cp -r plain sub/", "cp -r plain/a sub/b", "mv plain plain2",
+                                 "git init sub"])
+def test_r1_ordinary_folder_copies_are_unchanged(planted, cmd):
+    assert _all(planted, cmd) == ALLOW
+
+
+# 2. a shift-safe program with any option is not shift-safe
+@pytest.mark.parametrize("cmd", [
+    "sort -ro out a* b* c* d* e* f* g*",
+    "sort --out=x a* b* c* d* e* f* g*",
+    "ls -la a* b* c* d* e* f* g*",
+    "less -o log a* b* c* d* e* f* g*",
+])
+def test_r2_an_option_disqualifies_the_read_only_shortcut(proj, cmd):
+    assert _all(proj, cmd) == ASK
+
+
+# 3. the launcher picked through a workspace or filter selector, by identity,
+#    and a module script from outside the project
+@pytest.mark.parametrize("cmd", [
+    "npm -w gui start",
+    "npm --workspace=gui run start",
+    "pnpm --filter tess-gui start",
+    "pnpm -F ./gui start",
+    "yarn workspace tess-gui start",
+    "npm start --workspaces",
+    "node launcher-link.mjs",
+    "node /no/such/outside/tool.mjs",
+])
+def test_r3_more_ways_to_start_the_launcher_ask(gui, cmd):
+    link = gui[0] / "launcher-link.mjs"
+    if not link.exists():
+        os.symlink(str(gui[0] / "gui" / "bin" / "tess-gui.mjs"), str(link))
+    assert _all(gui, cmd) == ASK
+
+
+@pytest.mark.parametrize("cmd", ["npm -w web start", "node src/tool.mjs", "pnpm --filter web test"])
+def test_r3_neighbours_are_unchanged(gui, cmd):
+    assert _all(gui, cmd) == ALLOW
+
+
+# 4. the Codex root walk: more than one lock on the path, or no repository top
+def _layout(tmp_path, *, outer_lock: bool, git_at: "str | None"):
+    git = shutil.which("git")
+    if not git:
+        pytest.skip("git is not installed")
+    top = tmp_path / "w"
+    inner = top / "proj"
+    dirs = [inner] + ([top] if outer_lock else [])
+    for d in dirs:
+        (d / ".tess").mkdir(parents=True, exist_ok=True)
+        (d / ".tess" / "tess.lock").write_text("x\n")
+        (d / ".claude" / "hooks").mkdir(parents=True, exist_ok=True)
+        (d / ".claude" / "hooks" / "run-pinned.py").write_text("print('RAN')\n")
+    inner.mkdir(parents=True, exist_ok=True)
+    if git_at == "inner":
+        subprocess.run([git, "init", "-q", str(inner)], check=True, capture_output=True)
+    elif git_at == "outer":
+        subprocess.run([git, "init", "-q", str(top)], check=True, capture_output=True)
+    return inner
+
+
+def _codex_ok(inner) -> bool:
+    r = subprocess.run(["/bin/sh", "-c", _codex_hook_command()], cwd=str(inner), capture_output=True,
+                       text=True, stdin=subprocess.DEVNULL)
+    return r.returncode == 0 and "RAN" in r.stdout
+
+
+@pytest.mark.parametrize("outer_lock,git_at,ok", [
+    (False, "inner", True),     # the normal project
+    (True, "inner", False),     # a second lock above it
+    (False, "outer", False),    # not the top of its repository
+    (True, "outer", False),
+])
+def test_r4_codex_and_claude_root_walks_agree(tmp_path, outer_lock, git_at, ok):
+    inner = _layout(tmp_path, outer_lock=outer_lock, git_at=git_at)
+    assert _codex_ok(inner) is ok
+    assert (G._root_refusal(inner) == "") is ok
+
+
+def test_r4_codex_refuses_a_lock_outside_any_repository(tmp_path):
+    inner = _layout(tmp_path, outer_lock=False, git_at=None)
+    assert _codex_ok(inner) is False
+    # The Claude Code hook runs from the folder the runtime pinned at launch
+    # ($CLAUDE_PROJECT_DIR), so it keeps working outside git (stated in SECURITY.md).
+    assert G._root_refusal(inner) == ""
