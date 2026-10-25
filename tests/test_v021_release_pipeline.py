@@ -49,17 +49,53 @@ def test_publish_runs_in_the_npm_publish_environment_with_a_verified_tag():
     wf = load("publish-npm.yml")
     job = wf["jobs"]["publish"]
     assert job["environment"] == "npm-publish"
-    assert job["permissions"] == {"contents": "read", "actions": "read", "id-token": "write"}
-    names = [s.get("name", "") for s in job["steps"]]
+    assert job["permissions"] == {"contents": "read", "id-token": "write"}
+    # The signed-tag gate runs in `verify`, which publish depends on.
+    assert job["needs"] == "verify"
+    guard_run = job["steps"][0]["run"]
+    assert '"$GITHUB_REF_TYPE" != "tag"' in guard_run and "create-tess-v*" in guard_run
+    vjob = wf["jobs"]["verify"]
+    names = [s.get("name", "") for s in vjob["steps"]]
     verify = names.index("Gate 0 — tag must be signed by the Twiss release key")
-    assert verify < names.index("npm publish (Trusted Publishing / OIDC)")
-    run = job["steps"][verify]["run"]
+    assert verify < names.index("Install dependencies") < names.index("Pack the tested tarball")
+    run = vjob["steps"][verify]["run"]
     assert ".github/scripts/verify_release_tag.sh \"$TAG\"" in run
     # #205 union: fail closed on anything but a create-tess-v* tag ref,
     # before the signature check runs.
     guard = run.index('"$GITHUB_REF_TYPE" != "tag"')
     assert guard < run.index("verify_release_tag.sh")
     assert "create-tess-v*" in run[guard:run.index("verify_release_tag.sh")]
+
+
+def test_publish_job_runs_no_install_or_tests_and_ships_only_the_tested_tarball():
+    """v1.0.0 hardening: install-time and test code never runs in the job
+    that can mint the npm publish credential."""
+    wf = load("publish-npm.yml")
+    vjob, pjob = wf["jobs"]["verify"], wf["jobs"]["publish"]
+    # verify: no publish credential, no environment.
+    assert "id-token" not in vjob["permissions"]
+    assert "environment" not in vjob
+    vrun = "\n".join(s.get("run", "") for s in vjob["steps"])
+    assert "npm ci" in vrun and "npm test" in vrun
+    assert "npm publish" not in vrun
+    # publish: only the credential holder; nothing from the repo is installed or run.
+    assert pjob["needs"] == "verify"
+    assert pjob["permissions"]["id-token"] == "write"
+    uses = [s.get("uses", "") for s in pjob["steps"]]
+    assert not any(u.startswith("actions/checkout@") for u in uses)
+    assert any(u.startswith("actions/download-artifact@") for u in uses)
+    prun = "\n".join(s.get("run", "") for s in pjob["steps"])
+    for forbidden in ("npm ci", "npm test", "npm install --", "npm run", "node -e", "python"):
+        assert forbidden not in prun, forbidden
+    # The only npm install is the pinned npm itself.
+    assert re.findall(r"npm install [^\n]*", prun) == ['npm install -g "npm@${NPM_VERSION}"']
+    names = [s.get("name", "") for s in pjob["steps"]]
+    check = names.index("The tarball is the one verify tested")
+    assert check < names.index("npm publish (Trusted Publishing / OIDC)")
+    assert "needs.verify.outputs.sha256" in str(pjob["steps"][check]["env"])
+    pub = pjob["steps"][names.index("npm publish (Trusted Publishing / OIDC)")]["run"]
+    assert pub.startswith('npm publish "dist-npm/${TARBALL}"') and "--ignore-scripts" in pub
+    assert vjob["outputs"]["sha256"] == "${{ steps.pack.outputs.sha256 }}"
 
 
 def test_publish_npm_is_pinned_and_the_same_npm_is_tested_in_ci():

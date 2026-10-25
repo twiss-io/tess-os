@@ -26,6 +26,13 @@ name: Publish create-tess to npm
 #     leg runs the tests with, never the floating "latest" dist-tag.
 #   - `npm test` passes, including the packed-tarball scaffold test.
 # Trusted Publishing (OIDC, id-token: write): no NPM_TOKEN exists or is read.
+#
+# v1.0.0 hardening (audit note: install-time code next to the publish
+# credential): the gates, `npm ci` and `npm test` run in the `verify` job,
+# which has no id-token permission and no environment. It packs the tested
+# tarball and records its SHA-256. The `publish` job, the only one that can
+# mint the OIDC publish credential, runs no install and no project code: it
+# downloads that tarball, checks the digest and publishes it.
 
 on:
   push:
@@ -46,18 +53,16 @@ env:
   NPM_VERSION: '12.1.0'
 
 jobs:
-  publish:
-    name: npm publish create-tess
+  verify:
+    name: verify, test and pack create-tess
     runs-on: ubuntu-latest
-    # The `npm-publish` environment only admits `create-tess-v*` TAG refs
-    # (deployment policy, no reviewers). npm Trusted Publishing is bound to
-    # this environment, so a branch run (or a copy of this workflow wired to
-    # another trigger) cannot obtain a publish-capable OIDC token.
-    environment: npm-publish
+    # No environment and no id-token: nothing in this job can publish.
     permissions:
       contents: read
       actions: read     # Gate 0c reads the framework Release workflow's runs
-      id-token: write   # required for npm Trusted Publishing (OIDC) — no token
+    outputs:
+      tarball: ${{ steps.pack.outputs.tarball }}
+      sha256: ${{ steps.pack.outputs.sha256 }}
     defaults:
       run:
         working-directory: create-tess
@@ -191,6 +196,87 @@ jobs:
           set -euo pipefail
           npm pack --dry-run --json 2>/dev/null | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const f=JSON.parse(s)[0].files.map(x=>x.path);if(!f.includes("release-proof.json")){console.error("::error::release-proof.json is missing from the package");process.exit(1)}})'
 
-      # Provenance attestations are generated automatically with Trusted Publishing.
+      # Pack exactly once, after the tests, with lifecycle scripts off; the
+      # publish job ships these bytes and nothing else.
+      - name: Pack the tested tarball
+        id: pack
+        run: |
+          set -euo pipefail
+          mkdir -p ../dist-npm
+          TARBALL="$(npm pack --ignore-scripts --pack-destination ../dist-npm --json | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write(JSON.parse(s)[0].filename))')"
+          case "$TARBALL" in create-tess-*.tgz) ;; *) echo "::error::unexpected tarball name '$TARBALL'"; exit 1 ;; esac
+          SHA="$(sha256sum "../dist-npm/${TARBALL}" | cut -d' ' -f1)"
+          echo "tarball=${TARBALL}" >> "$GITHUB_OUTPUT"
+          echo "sha256=${SHA}" >> "$GITHUB_OUTPUT"
+          echo "packed ${TARBALL} sha256=${SHA}"
+
+      - name: Upload the tested tarball
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: create-tess-tarball
+          path: dist-npm/${{ steps.pack.outputs.tarball }}
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    name: npm publish create-tess
+    needs: verify
+    runs-on: ubuntu-latest
+    # The `npm-publish` environment only admits `create-tess-v*` TAG refs
+    # (deployment policy, no reviewers). npm Trusted Publishing is bound to
+    # this environment, so a branch run (or a copy of this workflow wired to
+    # another trigger) cannot obtain a publish-capable OIDC token.
+    environment: npm-publish
+    permissions:
+      contents: read
+      id-token: write   # required for npm Trusted Publishing (OIDC) — no token
+    steps:
+      # Fail closed on the ref even though `verify` already checked it.
+      - name: Refuse anything but a create-tess-v* tag
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_REF_TYPE" != "tag" ] || [[ "$TAG" != create-tess-v* ]]; then
+            echo "::error::publish must run on a create-tess-v* tag (got ${GITHUB_REF_TYPE} '${TAG}'). Refusing (fail closed)."
+            exit 1
+          fi
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+          package-manager-cache: false
+
+      - name: Install pinned npm
+        run: |
+          set -euo pipefail
+          npm install -g "npm@${NPM_VERSION}"
+          test "$(npm --version)" = "$NPM_VERSION"
+
+      - name: Download the tested tarball
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: create-tess-tarball
+          path: dist-npm
+
+      - name: The tarball is the one verify tested
+        env:
+          TARBALL: ${{ needs.verify.outputs.tarball }}
+          WANT_SHA: ${{ needs.verify.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          case "$TARBALL" in create-tess-*.tgz) ;; *) echo "::error::unexpected tarball name '$TARBALL'"; exit 1 ;; esac
+          GOT_SHA="$(sha256sum "dist-npm/${TARBALL}" | cut -d' ' -f1)"
+          if [ -z "$WANT_SHA" ] || [ "$GOT_SHA" != "$WANT_SHA" ]; then
+            echo "::error::tarball digest ${GOT_SHA} does not match the tested ${WANT_SHA}. Refusing to publish."
+            exit 1
+          fi
+
+      # Provenance attestations are generated automatically with Trusted
+      # Publishing. Publishing the tarball file runs no lifecycle script.
       - name: npm publish (Trusted Publishing / OIDC)
-        run: npm publish --access public
+        env:
+          TARBALL: ${{ needs.verify.outputs.tarball }}
+        run: npm publish "dist-npm/${TARBALL}" --access public --ignore-scripts
