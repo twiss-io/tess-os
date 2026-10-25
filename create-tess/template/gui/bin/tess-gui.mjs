@@ -11,6 +11,7 @@
 // in-process to auto-open the browser and is available on request via
 // --print-token.
 import { start } from '../server/index.js';
+import { agentSessionMarker } from '../server/agent-session.js';
 import { spawn } from 'node:child_process';
 
 process.on('unhandledRejection', (reason) => {
@@ -50,6 +51,24 @@ function openBrowser(url) {
 
 async function main(argv) {
   const opts = parseArgs(argv);
+
+  // The token authorizes spawning `claude`; never hand it to an AI agent
+  // that started this launcher. Refused before the server starts.
+  const marker = agentSessionMarker(process.env);
+  if (opts.printToken && marker) {
+    console.error(
+      `tess-gui: --print-token is refused: this launcher was started from inside an agent session (${marker} is set). ` +
+        'Run it yourself in a terminal to get the dashboard URL.',
+    );
+    process.exitCode = 2;
+    return;
+  }
+  if (marker) {
+    console.error(
+      `tess-gui: started from inside an agent session (${marker} is set): the dashboard is read-only for this run ` +
+        'and mission launch is refused.',
+    );
+  }
   const { port, token, url } = await start({ port: opts.port, dir: opts.dir });
 
   console.log(`tess-gui: dashboard running at http://127.0.0.1:${port}`);

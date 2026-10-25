@@ -440,6 +440,81 @@ def test_validate_contract_rejects_path_and_content_together(mcp_root):
         client.close()
 
 
+# --- validate_contract `path` confinement (audit hardening note C3) --------
+# The `path` argument is confined to the resolved project root: absolute
+# paths are refused, and a relative path is resolved with realpath (so an
+# in-root symlink pointing outside is caught too). A refusal is a protocol
+# error that carries no key names, values or parser text from the file.
+
+_OUTSIDE_KEY = "zz_outside_marker_key"
+_OUTSIDE_VALUE = "zz_outside_marker_value"
+
+
+@pytest.fixture
+def outside_contract(tmp_path_factory):
+    d = tmp_path_factory.mktemp("outside-project")
+    f = d / "outside.brief.json"
+    f.write_text(json.dumps({_OUTSIDE_KEY: _OUTSIDE_VALUE}), encoding="utf-8")
+    return f
+
+
+def _validate_path(root: Path, path_arg: str) -> dict:
+    client = McpStdio(root)
+    try:
+        _initialize(client)
+        return client.request("tools/call", {
+            "name": "validate_contract",
+            "arguments": {"contract_type": "brief", "path": path_arg},
+        })
+    finally:
+        client.close()
+
+
+def _assert_refused_without_leak(resp: dict, outside: Path) -> None:
+    assert "result" not in resp, resp
+    assert resp["error"]["code"] == -32602, resp
+    blob = json.dumps(resp)
+    for needle in (_OUTSIDE_KEY, _OUTSIDE_VALUE, outside.name, str(outside.parent)):
+        assert needle not in blob, (needle, resp)
+
+
+def test_validate_contract_refuses_absolute_path_outside_root(mcp_root, outside_contract):
+    resp = _validate_path(mcp_root, str(outside_contract))
+    _assert_refused_without_leak(resp, outside_contract)
+
+
+def test_validate_contract_refuses_absolute_path_even_inside_root(mcp_root):
+    brief_path = mcp_root / "missions" / "abs" / "task.brief.json"
+    brief_path.parent.mkdir(parents=True)
+    brief_path.write_text(json.dumps(_VALID_BRIEF), encoding="utf-8")
+    resp = _validate_path(mcp_root, str(brief_path))
+    assert resp["error"]["code"] == -32602, resp
+
+
+def test_validate_contract_refuses_relative_path_climbing_out_of_root(mcp_root, outside_contract):
+    rel = os.path.relpath(outside_contract, mcp_root)
+    assert rel.startswith("..")
+    resp = _validate_path(mcp_root, rel)
+    _assert_refused_without_leak(resp, outside_contract)
+
+
+def test_validate_contract_refuses_in_root_symlink_to_outside_file(mcp_root, outside_contract):
+    link = mcp_root / "missions" / "linked" / "task.brief.json"
+    link.parent.mkdir(parents=True)
+    link.symlink_to(outside_contract)
+    resp = _validate_path(mcp_root, "missions/linked/task.brief.json")
+    _assert_refused_without_leak(resp, outside_contract)
+
+
+def test_validate_contract_in_root_dotdot_that_stays_inside_is_allowed(mcp_root):
+    brief_path = mcp_root / "missions" / "m2" / "task.brief.json"
+    brief_path.parent.mkdir(parents=True)
+    brief_path.write_text(json.dumps(_VALID_BRIEF), encoding="utf-8")
+    resp = _validate_path(mcp_root, "missions/other/../m2/task.brief.json")
+    payload = resp["result"]["structuredContent"]
+    assert payload["valid"] is True, payload["violations"]
+
+
 # ---------------------------------------------------------------------------
 # 4) mission_status
 # ---------------------------------------------------------------------------
@@ -602,6 +677,60 @@ def test_gate_check_paths_matches_gate_pre_push_when_allowed(gate_repo, run_cli,
     assert mcp_payload["blocked"] == cli_payload["blocked"] is False
     assert mcp_payload["reasons"] == cli_payload["reasons"] == []
     assert mcp_payload["changed_paths_count"] == 1
+
+
+RECEIPT_EMIT_SRC = REPO_ROOT / "tools" / "receipt-emit"
+RECEIPT_VERIFY_SRC = REPO_ROOT / "tools" / "receipt-verify"
+CHAIN_REL = Path(".tess") / "state" / "receipts" / "chain.jsonl"
+
+
+def test_gate_check_paths_pass_never_emits_or_signs_receipts(gate_repo, run_cli, engine, verifier_gpg_keys):
+    """Audit addendum units 4/42: the MCP tool is read-only. Even on a PASS,
+    with receipt tooling committed in the base and the verifier's signing
+    key in the ambient keyring (everything `gate ci` needs to emit), it
+    never runs the receipt tooling, never signs and never touches the chain."""
+    shutil.copytree(RECEIPT_VERIFY_SRC, gate_repo / "tools" / "receipt-verify")
+    shutil.copytree(RECEIPT_EMIT_SRC, gate_repo / "tools" / "receipt-emit")
+    _commit_all(gate_repo, "vendor receipt tooling")
+    base = _base_sha(gate_repo)
+    (gate_repo / "src" / "prod").mkdir(parents=True)
+    (gate_repo / "src" / "prod" / "app.py").write_text("print('prod')\n")
+    blob = _blob_sha(gate_repo, "src/prod/app.py")
+    _write_verdict(
+        gate_repo, "missions/m1/verdicts/prod-src.verdict.md",
+        _valid_verdict(
+            covers_paths=["src/prod/**"], artifact_hashes={"src/prod/app.py": blob},
+            engine=engine, keys=verifier_gpg_keys,
+        ),
+    )
+    head = _commit_all(gate_repo, "prod change + covering verdict")
+    chain = gate_repo / CHAIN_REL
+    assert not chain.exists()
+
+    client = McpStdio(gate_repo, extra_env={"GNUPGHOME": str(verifier_gpg_keys["Reid"].home)})
+    try:
+        _initialize(client)
+        resp = client.request("tools/call", {
+            "name": "gate_check_paths",
+            "arguments": {"paths": ["src/prod/app.py"], "base": base, "head": head},
+        })
+        payload = resp["result"]["structuredContent"]
+    finally:
+        client.close()
+
+    assert payload["blocked"] is False, payload
+    assert not chain.exists(), "gate_check_paths must never write the receipt chain"
+    assert not (gate_repo / ".tess" / "state" / "receipts").exists()
+    assert payload["receipts_written"] is False
+    assert "receipts_emitted" not in payload and "receipt_gaps" not in payload
+
+    # Control: the same scenario through `gate ci` does emit, so the check
+    # above is not passing only because emission was impossible here.
+    r = run_cli(gate_repo, "gate", "ci", "--base", base, "--head", head, "--json",
+                extra_env={"GNUPGHOME": str(verifier_gpg_keys["Reid"].home)})
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert len(json.loads(r.stdout)["receipts_emitted"]) == 1
+    assert chain.exists()
 
 
 def test_gate_check_paths_defaults_head_to_current_head(gate_repo):

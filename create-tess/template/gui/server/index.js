@@ -25,6 +25,7 @@ import { fileURLToPath } from 'node:url';
 
 import { createRouter } from './routes/index.js';
 import { sendJson } from './routes/util.js';
+import { agentSessionMarker, confineToProjectRoot } from './agent-session.js';
 
 const CSP =
   "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " +
@@ -240,7 +241,15 @@ function createRequestHandler(ctx, router) {
   };
 }
 
-export async function start({ port = 0, dir = process.cwd(), openBrowser, deps: depsOverride, paths: pathsOverride } = {}) {
+export async function start({
+  port = 0,
+  dir = process.cwd(),
+  projectRoot,
+  env = process.env,
+  openBrowser,
+  deps: depsOverride,
+  paths: pathsOverride,
+} = {}) {
   const defaultDeps = await loadDefaultDeps();
   const deps = { ...defaultDeps, ...depsOverride };
 
@@ -257,13 +266,22 @@ export async function start({ port = 0, dir = process.cwd(), openBrowser, deps: 
   };
   const dataDir = paths.dataDir;
 
+  // The project root is the Tess instance that holds this gui package
+  // (README: it ships inside the repo and runs repo-local). The working
+  // folder must be that root or a folder under it; a mission child runs
+  // there and nowhere else.
+  const realProjectRoot = fs.realpathSync(projectRoot ?? path.dirname(packageRoot));
+  const realDir = confineToProjectRoot(path.resolve(dir), realProjectRoot);
+
   const clientDir = path.join(packageRoot, 'client');
   // Resolved once at startup (not per-request) since it can't change during
   // the process lifetime — see the realpath containment check in serveStatic.
   const realClientDir = await fs.promises.realpath(clientDir);
 
   const ctx = {
-    dir: path.resolve(dir),
+    dir: realDir,
+    projectRoot: realProjectRoot,
+    agentSession: agentSessionMarker(env),
     packageRoot,
     clientDir,
     realClientDir,

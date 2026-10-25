@@ -211,10 +211,12 @@ def test_gitleaks_download_is_checksum_verified(name):
 
 @_OWN
 def test_npm_publish_requires_the_framework_release_and_its_successful_run():
-    job = yaml.safe_load((WF / "publish-npm.yml").read_text(encoding="utf-8"))["jobs"]["publish"]
+    jobs = yaml.safe_load((WF / "publish-npm.yml").read_text(encoding="utf-8"))["jobs"]
+    job = jobs["verify"]  # the gates run in `verify`; `publish` needs it
+    assert jobs["publish"]["needs"] == "verify"
     names = [s.get("name", "") for s in job["steps"]]
     gate = names.index("Gate 0c — the framework GitHub Release exists and its release run succeeded")
-    assert gate < names.index("npm publish (Trusted Publishing / OIDC)")
+    assert gate < names.index("Pack the tested tarball")
     run = job["steps"][gate]["run"]
     assert 'gh release view "$FW"' in run and "isDraft == false" in run
     assert "gh run list --workflow release.yml" in run and '.conclusion == \\"success\\"' in run

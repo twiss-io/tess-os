@@ -37,6 +37,11 @@ Other flags: `--port <n>` (default: auto-assigned free port), `--dir <path>`
 (project root to operate on; default: current directory), `--no-open` (skip
 the automatic browser launch).
 
+`--dir` must be the Tess OS instance that holds this `gui/` folder, or a
+folder inside it; any other folder (including a link inside the instance that
+points outside it) is refused at startup, and missions never run anywhere
+else.
+
 `--dir` defaults to the current working directory, so run the command from
 your Tess OS instance root (where `.claude/commands/` and `agents/` live) —
 not from inside the `gui/` folder itself. Running it from `gui/` will show an
@@ -95,6 +100,22 @@ bug — the mission still completes normally.
   terminal scrollback, tmux history, and CI logs all persist plaintext, and
   this token is effectively an RCE-equivalent credential (it authorizes
   spawning `claude` on your machine). Use `--print-token` if you need it.
+- **Missions are read-only.** Every mission starts `claude -p` in plan mode
+  with its built-in tools limited to Read, Grep and Glob and no MCP servers
+  (`--permission-mode plan --strict-mcp-config --tools Read,Grep,Glob`), the
+  forms Tess's gate counts as read-only for a nested agent. A mission can
+  read and plan; it cannot edit files or run commands. The dashboard has no
+  wider mode. To make changes, run the work in your own Claude Code session
+  or with `tessctl run`, where Tess's gate asks you first.
+- The mission's working folder is the instance root the launcher was
+  started for (or a folder inside it), resolved through links.
+- Inside an AI agent session the launcher refuses `--print-token` and the
+  server refuses mission launch (`403`). It recognises the session by the
+  markers Tess already uses: `TESS_DISPATCHED` or `TESS_CONSULT_DEPTH` (set
+  by Tess's dispatch drivers), and Claude Code's or Codex's session markers
+  (`CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT`, `CODEX_THREAD_ID`,
+  `CODEX_SANDBOX`, `CODEX_SANDBOX_NETWORK_DISABLED`). Start the dashboard
+  yourself from a terminal.
 - `tess-gui` never reads `.claude/vault/` or `.claude/tess-secrets/`, and
   never handles or stores your Claude Code credentials itself.
 

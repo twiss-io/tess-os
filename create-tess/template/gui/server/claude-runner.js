@@ -5,6 +5,8 @@
 import { spawn, execFile } from 'node:child_process';
 import { StringDecoder } from 'node:string_decoder';
 
+import { confineToProjectRoot } from './agent-session.js';
+
 export const MIN_CLI_VERSION = '2.0.0';
 
 // A single stdout "line" (bytes buffered between two '\n's) is capped at 10MB.
@@ -41,16 +43,29 @@ export function getClaudeVersion({ claudeBin = 'claude' } = {}) {
   });
 }
 
-export function runMission({ dir, prompt, claudeBin = 'claude', onEvent, onExit } = {}) {
+// Every dashboard mission runs in this read-only form: plan mode, built-in
+// tools limited to Read/Grep/Glob, and no MCP servers (none is named with
+// --mcp-config, so --strict-mcp-config loads none). These are forms Tess's
+// gate itself counts as provably read-only for a nested claude run
+// (SECURITY.md, "Nested agent CLIs"). The dashboard has no control that
+// shows an operator a wider mode, so there is no wider mode. --tools takes
+// every word up to the next option, so it stays last, after the prompt.
+export const READ_ONLY_ARGS = Object.freeze(['--permission-mode', 'plan', '--strict-mcp-config', '--tools', 'Read,Grep,Glob']);
+
+export function runMission({ dir, projectRoot, prompt, claudeBin = 'claude', onEvent, onExit } = {}) {
+  // The child's working folder must be the project root the launcher was
+  // started for, or a folder under it (links resolved); anything else is
+  // refused before a child is started.
+  const cwd = confineToProjectRoot(dir, projectRoot);
   // --include-partial-messages is intentionally omitted: the dashboard client
   // renders complete assistant messages, not streaming deltas, so relaying
   // partial-message events would just require filtering them back out
   // downstream for no benefit to the current client.
-  const args = ['-p', prompt, '--output-format', 'stream-json', '--verbose'];
+  const args = ['-p', prompt, '--output-format', 'stream-json', '--verbose', ...READ_ONLY_ARGS];
   // stdin is explicitly ignored (not left as an unwritten-to pipe): the CLI
   // waits up to 3s for stdin data before proceeding, and every mission here
   // is prompt-driven via argv, never stdin.
-  const child = spawn(claudeBin, args, { cwd: dir, shell: false, stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn(claudeBin, args, { cwd, shell: false, stdio: ['ignore', 'pipe', 'pipe'] });
 
   let exited = false;
   const emit = (event) => {
