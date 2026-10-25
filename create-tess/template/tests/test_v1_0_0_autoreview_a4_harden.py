@@ -109,14 +109,14 @@ def test_on_fails_loudly_when_a_locked_path_is_not_the_one_listed(anchored, engi
     monkeypatch.setattr(engine.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 0, "", ""))
     victim = ".claude/hooks/tess-gate.py"
 
-    orig_run = rec.__call__ if hasattr(rec, "__call__") else None
-
     def swap_then_lock(r, argv, rels, ids=None):
-        # the real sudo would lock them; here we also simulate an attacker
-        # replacing one path with a different file during the call
+        # the real sudo would lock them; here we also simulate another process
+        # replacing one path with a different file during the call. The
+        # original is renamed away, not deleted, so it keeps its inode and the
+        # new file cannot reuse it (Linux reuses a freed inode at once).
         p = root / victim
         if p.exists() and not p.is_symlink():
-            p.unlink()
+            os.rename(str(p), str(p) + ".orig")
             p.write_bytes(b"different\n")   # a new inode: identity no longer matches
         for rel in rels:
             rec.locked.add(os.path.realpath(str(r / rel)))
