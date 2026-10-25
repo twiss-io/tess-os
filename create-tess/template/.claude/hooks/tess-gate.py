@@ -2847,6 +2847,7 @@ def _check_git(root: Path, cwd: str, env: dict, argv: list, v: Verdict, raw: str
     redirect = redirect or next((k for k in env if k in _REDIRECT_ENV), None) or next(
         ("-c " + c.split("=", 1)[0] for c in cfg if re.match(r"(?i)^core\.(worktree|bare)\b", c)), None)
     _check_git_tree_writes(root, gcwd, sub, rest, v, redirect, raw, depth)
+    _git_tree_arrival(root, gcwd, sub, rest, v)
     gcwd = gcwd or cwd
     hooks_env = any("hookspath" in (k + "=" + val).lower() for k, val in env.items()
                     if k.startswith("GIT_CONFIG"))
@@ -9615,6 +9616,10 @@ _PKG_DIR_OPTS = {"--prefix", "-C", "--dir", "--cwd"}
 # the all-packages forms include gui/.
 _PKG_SEL_OPTS = {"-w", "--workspace", "-F", "--filter"}
 _PKG_ALL_OPTS = {"-ws", "--workspaces", "-r", "--recursive", "--include-workspace-root"}
+# Options that take no value (any other option before the script name is read
+# as one that may take the next word, and fails closed in gui/).
+_PKG_FLAGS = {"-s", "--silent", "-q", "--quiet", "-d", "--verbose", "--if-present", "--offline",
+              "--prefer-offline", "--ignore-scripts", "--foreground-scripts", "-y", "--yes", "--json"}
 
 
 def _names_file(word, cwd, ctx: "_Ctx", base: str) -> bool:
@@ -9687,21 +9692,15 @@ def _gui_launch(root: Path, cwd: "str | None", name: str, argv: list, ctx: "_Ctx
     if name in _NODE_RUNNERS:
         if any(_names_launcher(root, cwd, a, ctx) for a in argv[1:]):
             return f"`{name} .../{_GUI_SCRIPT}`"
-        # a module script from outside the project could be any launcher
-        for a in argv[1:]:
-            _tick()  # E8: budget check per iteration
-            t = str(a)
-            if t.startswith("-"):
-                continue
-            if t.lower().endswith(".mjs") and _rel_to_root(root, cwd or str(root), t) is None:
-                return f"`{name}` running a module script from outside this project"
-            break
+        why = _node_outside(root, cwd, name, argv, ctx)
+        if why:
+            return why
         if "--run" in words and words[words.index("--run") + 1:words.index("--run") + 2] in (
                 ["start"], ["restart"]) and _is_gui_dir(root, cwd):
             return f"`{name} --run start` in gui/"
     if name not in _PKG_MANAGERS:
         return None
-    here, i, pos, picked = cwd, 0, [], False
+    here, i, pos, picked, unsure = cwd, 0, [], False, False
     while i < len(words):
         _tick()  # E8: budget check per iteration
         w = words[i]
@@ -9718,6 +9717,8 @@ def _gui_launch(root: Path, cwd: "str | None", name: str, argv: list, ctx: "_Ctx
             picked = picked or os.path.isfile(os.path.join(str(root), "gui", "bin", _GUI_SCRIPT))
         elif not w.startswith("-"):
             pos.append(w)
+        elif not (eq or opt in _PKG_FLAGS or opt.startswith("--no-")) and not pos:
+            unsure = True  # an option Tess does not know may take the next word as its value
         i += 1
     if name == "yarn" and pos[:1] == ["workspace"] and len(pos) > 1:
         picked = picked or _pkg_selects_gui(root, cwd, pos[1])
@@ -9729,7 +9730,11 @@ def _gui_launch(root: Path, cwd: "str | None", name: str, argv: list, ctx: "_Ctx
         here = os.path.join(str(root), "gui")
     if pos[:2] in (["exec", _GUI_BIN], ["x", _GUI_BIN], ["dlx", _GUI_BIN]):
         return f"`{name} {pos[0]} {_GUI_BIN}`"
-    if not pos or not _is_gui_dir(root, here):
+    if not _is_gui_dir(root, here):
+        return None
+    if unsure:
+        return f"`{name}` in gui/ with an option Tess does not know"
+    if not pos:
         return None
     if pos[0] in _PKG_START or (pos[0] in _PKG_RUN and len(pos) > 1 and (
             pos[1] in _PKG_START or _RUNTIME_TEXT.search(pos[1]))):
@@ -9777,6 +9782,65 @@ def _source_plants(cwd: str, src: str, dest_rel: str) -> bool:
     return _tree_plants([f"{dest_rel}/{base}"])
 
 
+_TREE_ASK = ("and what arrives can hold a `.tess/` or `.claude/hooks/` folder (a nested copy of "
+             "Tess's control files) that Tess cannot check name by name")
+_INIT_VALS = ("--template", "--separate-git-dir", "--object-format", "--ref-format", "--initial-branch",
+              "--shared")
+
+
+def _git_tree_arrival(root: Path, gcwd: "str | None", sub, rest: list, v: Verdict) -> None:
+    """automated review of 51851f6: `git clone`, `worktree add`, `submodule add`
+    and `init`, read after the git handler's own global-option parse (-C,
+    --git-dir, -c, ...: `gcwd` is the folder git works in, None when only
+    known at run time) and with the clone value-option table; a subcommand
+    or destination Tess cannot work out fails closed."""
+    if isinstance(sub, _Unk):
+        v.add(ASK, "its git subcommand is only known at run time, so Tess cannot tell whether it "
+                   "brings a whole repository into this project")
+        return
+    head = rest[:1]
+    if sub not in ("clone", "init") and not (sub in ("worktree", "submodule") and head == ["add"]):
+        return
+    if gcwd is None:
+        v.add(ASK, f"`git {sub}` runs in a folder only known at run time, " + _TREE_ASK)
+        return
+    if sub == "clone":
+        opts, pos, after, _ = _parse(rest, "bocuj", _CLONE_VALS)
+    elif sub == "init":
+        opts, pos, after, _ = _parse(rest, "b", _INIT_VALS)
+    elif sub == "worktree":
+        opts, pos, after, _ = _parse(rest[1:], "bB", ("--reason",))
+    else:
+        opts, pos, after, _ = _parse(rest[1:], "b", ("--branch", "--name", "--reference", "--depth"))
+    args = pos + after
+    words = args + [x for x in opts.values() if isinstance(x, str)]
+    if any(isinstance(w, _Unk) for w in words):
+        v.add(ASK, f"`git {sub}` has a destination or option only known at run time, " + _TREE_ASK)
+        return
+    if sub == "init":
+        for dest in [args[0] if args else "."] + [opts[k] for k in ("--separate-git-dir",)
+                                                  if isinstance(opts.get(k), str)]:
+            _tick()  # E8: budget check per iteration
+            full = os.path.realpath(os.path.join(gcwd, os.path.expanduser(str(dest))))
+            rel = _rel_to_root(root, gcwd, full)
+            if rel not in (None, ".") and os.path.isdir(os.path.join(full, ".tess")):
+                v.add(DENY, "`git init` makes a repository next to a nested copy of Tess's control "
+                            "folder, which would make that copy look like a project root", "protected")
+        return
+    if sub == "clone":
+        if not args:
+            return
+        dest = str(args[1]) if len(args) > 1 else \
+            os.path.basename(str(args[0]).rstrip("/")).removesuffix(".git") or "."
+    elif sub == "worktree":
+        dest = str(args[0]) if args else "."
+    else:
+        dest = str(args[1]) if len(args) > 1 else "."
+    if _rel_to_root(root, gcwd, dest) is not None:
+        v.add(ASK, f"`git {sub}{' add' if sub in ('worktree', 'submodule') else ''}` puts a whole "
+                   "checkout into this project, " + _TREE_ASK)
+
+
 def _check_tree_arrival(root: Path, cwd: str, name: str, argv: list, v: Verdict, ctx: "_Ctx") -> None:
     def dests(path_word) -> "list | None":
         """The project paths a destination word names ([] when none is in
@@ -9819,26 +9883,72 @@ def _check_tree_arrival(root: Path, cwd: str, name: str, argv: list, v: Verdict,
             if members is None or _tree_plants(members):
                 why = f"`{name}` extracts an archive into this project"
                 break
-    elif name == "git":
-        words = [str(a) for a in argv[1:]]
-        pos = [w for w in words if not w.startswith("-")]
-        sub = pos[:1]
-        if sub == ["clone"] and len(pos) > 1:
-            dest = pos[2] if len(pos) > 2 else os.path.basename(pos[1].rstrip("/")).removesuffix(".git")
-            if _rel_to_root(root, cwd, dest) is not None:
-                why = "`git clone` puts a whole repository into this project"
-        elif pos[:2] in (["worktree", "add"], ["submodule", "add"]):
-            why = f"`git {' '.join(pos[:2])}` puts a whole checkout into this project"
-        elif sub == ["init"]:
-            dest = pos[1] if len(pos) > 1 else "."
-            full = os.path.realpath(os.path.join(cwd, os.path.expanduser(dest)))
-            rel = _rel_to_root(root, cwd, full)
-            if rel not in (None, ".") and os.path.isdir(os.path.join(full, ".tess")):
-                v.add(DENY, "`git init` makes a repository next to a nested copy of Tess's control "
-                            "folder, which would make that copy look like a project root", "protected")
     if why:
-        v.add(ASK, f"{why}, and what arrives can hold a `.tess/` or `.claude/hooks/` folder (a nested "
-                   "copy of Tess's control files) that Tess cannot check name by name")
+        v.add(ASK, f"{why}, " + _TREE_ASK)
+
+
+_NODE_PRELOADS = {"-r", "--require", "--import", "--loader", "--experimental-loader"}
+_NODE_KNOWN = {"-e", "--eval", "-p", "--print", "-i", "--interactive", "-c", "--check", "-h", "--help",
+               "-v", "--version", "--v8-options", "--test", "--run", "-", "--"}
+
+
+def _node_outside(root: Path, cwd, name: str, argv: list, ctx: "_Ctx") -> "str | None":
+    """automated review of 51851f6: a node program, or a module it loads first
+    (-r/--require, --import, --loader), from outside this project could be any
+    launcher; so could one Tess cannot read. Uses the interpreter parser for
+    the program word and node's option table for the preloads; an option Tess
+    does not know fails closed. bun and deno: every operand that names a file."""
+    base = cwd or str(root)
+
+    def outside(word) -> bool:
+        vals, _ = _word_values(word, cwd, ctx)
+        if vals is None:
+            return True
+        for text, _pat in vals:
+            _tick()  # E8: budget check per iteration
+            t = str(text)
+            if t.startswith("file:"):
+                t = t[5:].lstrip("/") and "/" + t[5:].lstrip("/")
+            elif re.match(r"^[a-z][a-z0-9+.-]*:", t) and not t.startswith(("node:",)):
+                return True  # a URL or data: module Tess cannot read
+            elif not (t.startswith((".", "/", "~")) or os.sep in t or re.search(r"\.[cm]?[jt]sx?$", t)):
+                continue  # a bare package name, resolved from the project's node_modules
+            if _rel_to_root(root, base, t) is None:
+                return True
+        return False
+
+    words = [str(a) for a in argv]
+    if name in ("node", "nodejs"):
+        i = 1
+        while i < len(words):
+            _tick()  # E8: budget check per iteration
+            a = words[i]
+            if a == "--" or not a.startswith("-") or a == "-":
+                break
+            opt, eq, _val = a.partition("=")
+            if opt in _NODE_PRELOADS:
+                if outside(_sub_word(argv[i], len(opt) + 1) if eq else (argv[i + 1] if i + 1 < len(argv)
+                                                                        else _plain(""))):
+                    return f"`{name}` loading a module from outside this project (or one Tess cannot read)"
+                i += 1 if eq else 2
+                continue
+            if opt in ("-e", "--eval", "-p", "--print"):
+                return None  # code on the command line: the interpreter rules read it
+            if not (eq or opt in _NODE_VALUES or opt in _NODE_KNOWN or _NODE_FLAG.match(opt)):
+                return f"`{name}` with an option Tess does not know ({opt[:40]})"
+            i += 2 if (opt in _NODE_VALUES and not eq) else 1
+        info = _interp_parse(name, argv, ctx)
+        if info is None or info["kind"] == "unknown":
+            return f"`{name}` running a program only known at run time"
+        if info["kind"] == "script" and info["word"] is not None and outside(info["word"]):
+            return f"`{name}` running a script from outside this project"
+        return None
+    for k, a in enumerate(argv[1:], 1):
+        _tick()  # E8: budget check per iteration
+        t = words[k]
+        if not t.startswith("-") and (os.sep in t or re.search(r"\.[cm]?[jt]sx?$", t)) and outside(a):
+            return f"`{name}` running a script from outside this project"
+    return None
 
 
 def _check_gui_launcher(root: Path, cwd: "str | None", name: str, argv: list, env: dict, v: Verdict,

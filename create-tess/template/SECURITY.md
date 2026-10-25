@@ -674,8 +674,11 @@ security reviews; they are stated so nobody relies on a check that is not there.
   filter selector (`-w`, `--workspace`, `-F`, `--filter`, `yarn workspace`,
   the all-packages forms; a selector value Tess cannot pin down counts). The
   script is matched by file identity as well as by name, so a link or a hard
-  link to it counts, and `node` running a `.mjs` file from outside the project
-  asks too. Each asks in Claude Code, is refused
+  link to it counts. `node` running a program, or loading a module first
+  (`-r`, `--require`, `--import`, `--loader`), from outside the project, or
+  with an option Tess does not know, asks too (`bun` and `deno`: any file
+  operand outside the project), and so does a package manager in gui/ given
+  an option Tess does not know before the script name. Each asks in Claude Code, is refused
   in Codex and the no-prompt modes, is refused inside a peer call or a nested
   session, is refused with a hook-skipping variable set, and counts one agent
   against the task's budget. `npm test` in gui/ is unaffected. The launcher's
@@ -698,7 +701,9 @@ security reviews; they are stated so nobody relies on a check that is not there.
   asks when what arrives holds a `.tess/` or `.claude/hooks/` folder at any
   depth or cannot be listed (a source only known at run time, a folder of
   more than 20,000 names, an archive Tess cannot read), and so does a `git
-  clone`, `git worktree add` or `git submodule add` into the project; a `.git`
+  clone`, `git worktree add` or `git submodule add` into the project (read
+  after git's own global options such as `-C`; a subcommand, folder or
+  destination only known at run time asks); a `.git`
   folder or file next to a nested `.tess/` (also through `git init`) is
   refused. The Codex hook walks every folder from where Codex runs up to `/`:
   it refuses to run when more than one of them holds `.tess/tess.lock`, and

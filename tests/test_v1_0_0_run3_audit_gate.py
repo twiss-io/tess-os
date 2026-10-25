@@ -340,3 +340,49 @@ def test_r4_codex_refuses_a_lock_outside_any_repository(tmp_path):
     # The Claude Code hook runs from the folder the runtime pinned at launch
     # ($CLAUDE_PROJECT_DIR), so it keeps working outside git (stated in SECURITY.md).
     assert G._root_refusal(inner) == ""
+
+
+# ============================== automated review of 51851f6 (two MEDIUM items)
+# 1. clone / worktree / submodule / init read through git's global options
+@pytest.mark.parametrize("cmd", [
+    "git -C sub clone https://example.invalid/x.git",
+    "git -c a.b=c clone --depth 1 https://example.invalid/x.git sub/y",
+    "git clone -b main https://example.invalid/x.git sub/z",
+    "git clone https://example.invalid/x.git $DEST",              # destination only known at run time
+    "git $SUB https://example.invalid/x.git",                     # subcommand only known at run time
+])
+def test_r5_git_global_options_do_not_hide_a_clone_into_the_project(planted, cmd):
+    assert _all(planted, cmd) in (ASK, DENY)
+    assert _all(planted, cmd)[2] == DENY[2]
+
+
+def test_r5_git_init_through_c_next_to_a_nested_tess_is_refused(planted):
+    assert _all(planted, "git -C planted init deep") == DENY
+
+
+@pytest.mark.parametrize("cmd", ["git clone https://example.invalid/x.git /tmp/elsewhere-zz",
+                                 "git -C /tmp clone https://example.invalid/x.git", "git status"])
+def test_r5_neighbours_are_unchanged(planted, cmd):
+    assert _all(planted, cmd) == ALLOW
+
+
+# 2. node's program and preload operands, by node's option grammar
+@pytest.mark.parametrize("cmd", [
+    "node /no/such/outside/tool.js",
+    "node -r /no/such/outside/pre.js src/app.js",
+    "node --import=/no/such/outside/pre.mjs src/app.js",
+    "node --require /no/such/outside/pre.cjs src/app.js",
+    "node --an-option-tess-does-not-know x src/app.js",
+    "cd gui && npm --loglevel silly start",                       # an unknown option before the script
+])
+def test_r6_node_outside_scripts_and_unknown_options_ask(gui, cmd):
+    assert _all(gui, cmd) == ASK
+
+
+@pytest.mark.parametrize("cmd", [
+    "node src/app.js", "node -r ./src/setup.js src/app.js", "node -r dotenv/config src/app.js",
+    "node --max-old-space-size=4096 src/app.js", "node --enable-source-maps src/app.js",
+    "node -e 'console.log(1)'",
+])
+def test_r6_neighbours_are_unchanged(gui, cmd):
+    assert _all(gui, cmd) == ALLOW
