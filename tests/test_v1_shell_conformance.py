@@ -134,6 +134,29 @@ def test_the_jail_refuses_writes_outside_the_sandbox(gate_env):
     sc.confinement_self_test(sc.fresh_copy(pristine, work / "selftest2"))
 
 
+def test_worst_case_shells_match_dot_names_and_extended_globs(gate_env):
+    """1.0.0 (Cyra and Reid, f8 review): every shell also runs with the glob
+    options that match the most (zsh GLOB_DOTS + EXTENDED_GLOB, bash dotglob
+    + extglob), and those runs really have them on."""
+    _gate, pristine, work = gate_env
+    worst = [sh for sh in sc.shells() if sh.endswith(sc.WORST_SUFFIX)]
+    assert {os.path.basename(sh[:-len(sc.WORST_SUFFIX)]) for sh in worst} >= {"bash", "zsh"}
+    for sh in worst:
+        s = sc.fresh_copy(pristine, work / "worstcheck")
+        d = Path(s["T"]) / "w"
+        d.mkdir()
+        (d / ".hid").write_text("x")
+        (d / "abc").write_text("x")
+        (d / "abd").write_text("x")
+        ext = "ab^c" if "zsh" in os.path.basename(sh) else "!(abc)"
+        code, err = sc.run_shell(sh, f"cd '{d}' && for f in *; do touch \"$f.seen\"; done && "
+                                     f"for f in {ext}; do touch \"$f.ext\"; done", s)
+        assert code == 0, (sh, err)
+        assert (d / ".hid.seen").exists(), sh                     # dot names match
+        assert (d / "abd.ext").exists() and not (d / "abc.ext").exists(), sh  # extended glob
+    sc._rmtree(work / "worstcheck")
+
+
 def test_attack_and_everyday_corpus_conforms(gate_env):
     gate, pristine, work = gate_env
     cases = json.loads(CORPUS.read_text(encoding="utf-8"))["cases"]

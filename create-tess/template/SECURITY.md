@@ -381,14 +381,38 @@ security reviews; they are stated so nobody relies on a check that is not there.
   A write whose target is a recursive glob (`rm -rf **/__pycache__`, `chmod +x
   **/*.sh`) is decided from the files on disk (1.0.0, U1): it is allowed only
   when the listing is complete, crosses no link, and nothing earlier in the
-  command changes files, makes a link, loops or defines a function. Any name on
+  command changes files, makes a link, loops or defines a function, and no
+  process substitution (`<(...)`, `>(...)`, zsh's `=(...)`) appears anywhere
+  in it (its command runs while the words are expanded). Any name on
   disk that is, holds or lies inside a protected path is refused, and the
   protected paths the pattern can spell are looked at directly, so a real
   match is refused even when the listing stops early. A listing cut short (a
   link the shell's walk crosses, or more names than even the larger budget
   below) is refused as before; a complete listing after an earlier change in
   the command asks, and the reason names the `find ... -prune -exec rm -rf {}
-  +` form. Inside the project, a glob listing that only ran past the limits
+  +` form. **Shell options Tess cannot see (1.0.0, f8 review).** Claude Code
+  runs an agent's commands with your own shell options (for zsh, what your
+  startup files set), and Tess cannot read them, so wherever a glob may reach a
+  protected path, a control file or the key folder, it is read under the worst
+  case: a glob step matches a name that starts with a dot (zsh `GLOB_DOTS`,
+  bash `dotglob`; never `.` or `..`), and `**` and `***` walk into dot folders;
+  an unquoted `^`, `~` or `#` inside a word is a wildcard (zsh
+  `EXTENDED_GLOB`: negation, exclusion, repetition), read as a plain glob that
+  matches every name either reading can name (`^x` as `*`, `x#` as `*`, `L~R`
+  as `L*`, or `L*/**` when `R` holds a `/`); a `(` inside an argument (zsh
+  alternatives and qualifiers, bash `extglob`) asks, as above, and so does
+  zsh's `<N-M>` number range (a glob in zsh, two redirections in bash). A
+  wildcard that can end on a control file or folder only because it may match
+  a dot name is decided from the listing: it asks when the listing is cut
+  short, when something in the command can change files first, or when a name
+  it lists ends on one. These readings only add names to what is checked: with
+  your real options the shell never matches more. In a Tess project
+  `.claude/hooks/` holds `.sh` files, so a recursive write such as `chmod +x
+  **/*.sh` or `rm -f **/*.sh` is refused, as `chmod +x .claude/hooks/*.sh`
+  is; use `find . -path ./.claude -prune -o -name '*.sh' -exec chmod +x {} +`.
+  An unquoted variable's value is read as a pattern too (bash always; zsh
+  with `GLOB_SUBST`), with the same worst case. Not covered: zsh `BRACE_CCL`,
+  which makes `{ab}` read as `a b`. Inside the project, a glob listing that only ran past the limits
   (1,000 names, 20,000 entries) is listed again with a larger budget (100,000
   names, 200,000 entries) when its fixed folder has no link on it and no step
   can climb out (`..`, or a step such as `.*` that can match `..`); names in
@@ -717,11 +741,24 @@ security reviews; they are stated so nobody relies on a check that is not there.
 - **Optional OS file lock: `tessctl harden` (1.0.0, off by default).** `tessctl
   harden on`, run by you in your own terminal, sets the operating system's
   root-owned immutable flag on the files only Tess writes (`.claude/settings.json`,
-  `.claude/hooks/`, `.tess/core/`, `.tess/bin/`, `.tess/tess.lock`, `tessctl`,
-  `tess.manifest.json` and Tess's git hooks): `schg` on macOS (`sudo chflags
-  schg`), `+i` on Linux (`sudo chattr +i`). While it is set, no process running
-  as your user can write, truncate, rename, replace or delete those files,
-  whatever the spelling; clearing it needs root. It is an operating-system
+  the files in `.claude/hooks/`, `.tess/core/` and `.tess/bin/`,
+  `.tess/tess.lock`, `tessctl`, `tess.manifest.json` and Tess's git hooks) and,
+  since the f8 review, on the folders that hold only such files:
+  `.claude/hooks/`, `.tess/core/`, `.tess/bin/` and every folder below them
+  (not `__pycache__`): `schg` on macOS (`sudo chflags schg`), `+i` on Linux
+  (`sudo chattr +i`). While it is set, no process running as your user can
+  write, truncate, rename or delete a locked file, add, remove or rename an
+  entry in a locked folder, or rename or delete a locked folder; clearing it
+  needs root. What it does not cover: a folder that also holds files other
+  programs write cannot be locked, so a process running as your user can
+  rename it and put a new copy in its place. Those folders are the project
+  folder itself (it holds `tessctl` and `tess.manifest.json`), `.claude/`
+  (Claude Code writes `settings.local.json` there; it holds `settings.json`
+  and `hooks/`), `.tess/` (runtime state; it holds `tess.lock`, `core/` and
+  `bin/`) and the repository's git hooks folder (other tools install hooks
+  there). After such a rename the locked files are no longer where Tess runs
+  them from; `tessctl anchor status` and `tessctl verify` still report the
+  changed files, as they do without the lock. It is an operating-system
   boundary under the gate and the anchor, which are unchanged. Only `harden on`
   and `harden off` ever run sudo, and only at an interactive terminal outside
   Claude Code and Codex; the gate refuses both to agents, and refuses
@@ -733,13 +770,13 @@ security reviews; they are stated so nobody relies on a check that is not there.
   `self-update`, `restore`, `render`, `rollback` and the other commands that
   rewrite these files stop before changing anything and ask you to run
   `tessctl harden off` first (none of them runs sudo); `tessctl harden status`
-  says whether the lock is off, on or partial. Undo: `tessctl harden off`, or
-  by hand `sudo chflags -R noschg <project>` (macOS) or `sudo chattr -R -i
-  <project>` (Linux). Limits: anything that can run sudo without a password (a
+  says whether the lock is off, on or partial. Undo: `tessctl harden off`
+  (files and folders), or by hand `sudo chflags -R noschg <project>` (macOS)
+  or `sudo chattr -R -i <project>` (Linux). Limits: anything that can run sudo without a password (a
   cached sudo session, a NOPASSWD rule) can clear the flag; new files can still
   be created beside locked ones; a git checkout, merge, rebase or reset that
-  rewrites a locked file fails part-way, so unlock before checking out another
-  version of Tess; copies made with `cp -p`, `rsync -X` or `ditto` keep the
+  rewrites a locked file, or adds or removes one in a locked folder, fails
+  part-way, so unlock before checking out another version of Tess; copies made with `cp -p`, `rsync -X` or `ditto` keep the
   flag; file systems without the flag (tmpfs, some network drives) show as
   not locked in `harden status`; Windows is not supported.
 - **`.claude/settings.local.json` is anchored by its content (since v1.0.x, Quinn

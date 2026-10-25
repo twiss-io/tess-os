@@ -155,11 +155,13 @@ SHELL = [
     ("Z-alt", "rm -f CLAUDE.m(d)", ASK),
     ("Z-alt3", "cp @W/evil/CLAUDE.md CLAUDE.(md)", ASK),
     ("Z-rec", "rm -f **/CLAUDE.md", DENY),
-    # 1.0.0 (U1): a recursive glob is decided from the files on disk; no name
-    # here matches one (real bash 3.2 and zsh 5.9: "no matches found"), so
-    # these allow. Z-rec (a real CLAUDE.md) stays a deny.
-    ("Z-rec2", "rm -f ./**/tess-gate.py", ALLOW),
-    ("Z-rec3", "cp @W/evil3/tess-gate.py **/hooks/", ALLOW),
+    # 1.0.0 (U1): a recursive glob is decided from the files on disk. With
+    # default options no name here matches one (real bash 3.2 and zsh 5.9: "no
+    # matches found"); 1.0.0 (Cyra/Reid f8 review) reads globs with dot names
+    # matched (GLOB_DOTS, dotglob: the worst case), so both name
+    # .claude/hooks/tess-gate.py and are refused again, as before U1.
+    ("Z-rec2", "rm -f ./**/tess-gate.py", DENY),
+    ("Z-rec3", "cp @W/evil3/tess-gate.py **/hooks/", DENY),
     ("Z-tilde-dirs", "pushd @W && cp @W/evil/CLAUDE.md ~-/", ASK),
     ("Z-neg", "rm -f [^n]*.md", DENY),
     ("Z-param-glob2", "F='CLAUDE.m?'; rm -f $~F", ASK),
@@ -180,8 +182,11 @@ SHELL = [
     ("Y-equiv", "rm -f [[=C=]]LAUDE.md", DENY),
     ("Y-zsh-or-dir", "rm -rf (.claude|x)", ASK),
     ("Y-starstar-bash", "shopt -s globstar; rm -f **/CLAUDE.md", DENY),
-    ("Y-extglob-z", "setopt extendedglob; rm -f CLAUDE.md~x", ASK),
-    ("Y-extglob-z2", "setopt extendedglob; rm -f ^notes.md", ASK),
+    # 1.0.0 (f8 review): `~` and `^` are read as wildcards whatever the options
+    # (the operator's own may already set EXTENDED_GLOB), so these match
+    # CLAUDE.md and are refused, which is stricter than the option-change ask.
+    ("Y-extglob-z", "setopt extendedglob; rm -f CLAUDE.md~x", DENY),
+    ("Y-extglob-z2", "setopt extendedglob; rm -f ^notes.md", DENY),
     ("Y-hash-d", "hash -d p=@P; cp @W/evil/CLAUDE.md ~p/", ASK),
     ("Y-named-dir", "p=@P; cp @W/evil/CLAUDE.md ~p/", ASK),
     ("V-arith-let", "let \"x=a[\\$(rm -f CLAUDE.md)]\"", ASK),
@@ -350,7 +355,9 @@ def test_a_recursive_glob_over_its_walk_budget_asks(proj, W, monkeypatch):  # no
 def test_many_recursive_steps_are_matched_without_a_cap():
     assert G._parts_match(["CLAUDE.md"], ["**"] * 7 + ["CLAUDE.md"]) == "full"
     assert G._parts_match(["a", "b", "c", "d", "e", "f", "g", "CLAUDE.md"], ["**"] * 9 + ["CLAUDE.md"]) == "full"
-    assert G._parts_match([".claude", "x"], ["**", "x"]) is None  # `**` skips hidden folders
+    # 1.0.0 (f8 review): `**` enters hidden folders under GLOB_DOTS / dotglob,
+    # the worst case of the operator's shell options
+    assert G._parts_match([".claude", "x"], ["**", "x"]) == "full"
 
 
 def test_many_recursive_steps_still_hit_a_protected_file(proj, W):  # noqa: F811

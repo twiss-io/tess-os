@@ -744,11 +744,28 @@ def _check_key_text(cwd: str, argv: list, raw: str, v, ctx: "_Ctx | None" = None
             _tick()  # E8: budget check per iteration
             if text != str(a):
                 parts |= {text, text.split("=", 1)[-1]}
+        # 1.0.0 (Cyra f8, item a): a pattern that is a glob only under the
+        # worst case of the shell options (`^ ~ #`, see _ext_glob) is listed
+        # too; the names it matches are checked like any other glob's.
+        for text, pat in vals or []:
+            _tick()  # E8: budget check per iteration
+            if pat and not any(c in text for c in "*?["):
+                ext = _glob(cwd, pat)
+                if any(key_hit(cwd, g, ancestors=recursive) for g in ext):
+                    v.add(DENY, f"it reaches {a}, Tess's key directory; the signing keys there are "
+                                "for the operator's own tools, not for an agent", "keys")
+                    return
+                if ext.truncated and not _key_listing_safe(root, cwd, pat, ext, ctx):
+                    v.add(ASK, f"{a} matches more names than Tess lists one by one (or a folder it "
+                               "cannot read), so Tess cannot tell whether it reaches its key directory")
         for part in parts:
             _tick()  # E8: budget check per iteration
             globbed = _glob(cwd, part) if any(c in part for c in "*?[") else _Matches()
+            # 1.0.0 (Cyra f8, item a): a glob matches dot names too (the worst
+            # case), so `grep -r x ~/*` names ~/.config; a recursive reader of
+            # a folder above the key directory reaches it, as with the text.
             if _KEY_TEXT.search(part) or key_hit(cwd, part, ancestors=recursive) or any(
-                    key_hit(cwd, g) for g in globbed):
+                    key_hit(cwd, g, ancestors=recursive) for g in globbed):
                 v.add(DENY, f"it reaches {a}, Tess's key directory; the signing keys there are for "
                             "the operator's own tools, not for an agent", "keys")
                 return
@@ -797,6 +814,112 @@ def _shell_glob(pat: str) -> str:
             continue
         out.append("?" if cls else "[" + neg + pat[start:j] + "]")
         i = j + 1
+    return "".join(out)
+
+
+# 1.0.0 (Cyra f8 review, item a): Claude Code runs an agent's commands with
+# the operator's own shell options, which Tess cannot see. Where a glob may
+# reach a protected path or control file, it is read under the worst case:
+#   * dot names match (zsh GLOB_DOTS, bash dotglob): `*`, `?`, `[...]` and
+#     `**` match a name that starts with a dot (never `.` or `..`, which no
+#     shell option makes a glob match; `.*` as `..` is _glob_may_be_dotdot);
+#   * zsh EXTENDED_GLOB: an unquoted `^` (negation), `~` (exclusion) or `#`
+#     (repetition) is a wildcard. Each is replaced by a plain glob that
+#     matches every name either reading names (the extended one, and the
+#     plain one where the character is literal), so a check only ever sees
+#     more names:  `^x` and `a^x` -> `*` / `a*` (to the end of the step);
+#     `x#`, `x##` -> `*` (x: one character, `?` or `[...]`);  `L~R` -> `L*`,
+#     and `L*/**` when R holds a `/` (the exclusion only removes names, and
+#     the plain reading names the literal `L~R`).
+#   * zsh and bash `(...)` patterns (alternatives, ksh-style `@(..)`/`!(..)`,
+#     glob qualifiers, `(#i)` flags) already ask (_PAREN_ASK), and so does
+#     zsh's `<N-M>` number range (_ZSH_RANGE_ASK).
+# The unquoted characters are marked while the word is read (quoted ones
+# stay literal); _ext_glob turns the marks into the plain glob above.
+_EXT_MARKS = {"^": "\x01", "~": "\x02", "#": "\x03"}
+_EXT_UNMARK = {m: c for c, m in _EXT_MARKS.items()}
+_GLOB_WORST = re.compile(r"[*?[^~#]")
+
+
+def _ext_mark(text: str) -> str:
+    """`text` (unquoted shell text) with its extended-glob characters marked."""
+    return text.translate(str.maketrans(_EXT_MARKS)) if re.search(r"[\^~#]", text) else text
+
+
+def _bracket_end(pat: str, i: int) -> int:
+    """Index of the `]` closing the bracket expression at pat[i] ("["), as the
+    shell reads it, or -1 when it does not close (a literal `[`)."""
+    j, n = i + 1, len(pat)
+    if j < n and pat[j] in "!^\x01":
+        j += 1
+    if j < n and pat[j] == "]":
+        j += 1
+    while j < n and pat[j] != "]":
+        _tick()  # E8: budget check per iteration
+        if pat[j] == "[" and j + 1 < n and pat[j + 1] in ":=.":
+            end = pat.find(pat[j + 1] + "]", j + 2)
+            if end < 0:
+                return -1
+            j = end + 2
+            continue
+        j += 1
+    return j if j < n else -1
+
+
+def _ext_glob(pat: str) -> str:
+    """A glob pattern holding _ext_mark marks, as a plain glob that matches
+    every name the extended reading or the plain reading matches (see above)."""
+    if not any(m in pat for m in _EXT_UNMARK):
+        return pat
+    out, i, n = [], 0, len(pat)
+
+    def star():
+        if not (out and out[-1].endswith("*")):
+            out.append("*")
+
+    while i < n:
+        _tick()  # E8: budget check per iteration
+        c = pat[i]
+        if c == "[":
+            end = _bracket_end(pat, i)
+            if end > 0:
+                body = pat[i:end + 1]
+                out.append("".join(_EXT_UNMARK.get(x, x) for x in body))  # literal inside
+                i = end + 1
+                continue
+            out.append("[[]")
+            i += 1
+            continue
+        if c == "\x02":
+            # L~R: the exclusion only removes names from L's; the plain reading
+            # is the literal L~R, one step longer for each `/` in R.
+            star()
+            if "/" in pat[i + 1:]:
+                out.append("/**")
+            break
+        if c == "\x01":
+            # ^x: anything but x, to the end of this step (an exclusion later
+            # in the step still applies to the whole pattern)
+            star()
+            i += 1
+            while i < n and pat[i] not in ("/", "\x02"):
+                _tick()  # E8: budget check per iteration
+                if pat[i] == "[" and _bracket_end(pat, i) > 0:
+                    i = _bracket_end(pat, i) + 1
+                    continue
+                i += 1
+            continue
+        if c == "\x03":
+            # x#, x##: zero or more of the element before it
+            if out and not out[-1].endswith("/"):
+                out.pop()
+            star()
+            while i < n and pat[i] == "\x03":
+                _tick()  # E8: budget check per iteration
+                i += 1
+            continue
+        out.append(c)
+        i += 1
     return "".join(out)
 
 
@@ -964,7 +1087,8 @@ def _parts_match(names: list, pats: list) -> "str | None":
     steps, never a hidden one (zsh, bash globstar); others match one step as
     the shell does (round 4: no enumeration, so no cap). Round 4b: a step
     that only holds `**` (`x**`, `.**`) is one step in zsh; it is read both
-    ways, so it matches at least what either reading names."""
+    ways, so it matches at least what either reading names. 1.0.0 (Cyra f8,
+    item a): `**` enters dot folders too (GLOB_DOTS, dotglob: the worst case)."""
     memo = {}
 
     def go(i, j):
@@ -980,7 +1104,7 @@ def _parts_match(names: list, pats: list) -> "str | None":
                 res |= go(i + 1, j)
         elif "**" in pats[i]:
             res |= go(i + 1, j)
-            if not names[j].startswith("."):
+            if names[j] not in (".", ".."):
                 res |= go(i, j + 1)
             if pats[i] not in ("**", "***") and _seg_match(names[j], pats[i]):
                 res |= go(i + 1, j + 1)
@@ -1187,15 +1311,22 @@ def _recursive_step(pat: str) -> bool:
 
 
 _LOOP_OR_FUNC = re.compile(r"(?<![\w.-])(while|until|for|select|function|trap|coproc)(?![\w.-])|\w\s*\(\s*\)")
+# 1.0.0 (Cyra f8 review, item d): process substitution, `<(...)` and `>(...)`
+# (and zsh's `=(...)`), starts its command while the words are still being
+# expanded, so it can change files before or while a glob is listed, wherever
+# it stands in the command. Matched on the raw text, quoted or not: a false
+# match only keeps a prompt.
+_PROC_SUB = re.compile(r"[<>=]\(")
 
 
 def _u1_quiet(ctx: "_Ctx") -> bool:
     """Nothing earlier in the command can have made a name the glob now
     matches: no file changed, no link made, not a function body, no loop or
     function anywhere in the command (a later pass of a loop runs after the
-    commands below it)."""
+    commands below it), and no process substitution anywhere in it (its
+    command runs while the words are expanded)."""
     return not (ctx.mutated or ctx.links or ctx.rt_links or ctx.deferred or ctx.opaque
-                or _LOOP_OR_FUNC.search(ctx.raw or ""))
+                or _LOOP_OR_FUNC.search(ctx.raw or "") or _PROC_SUB.search(ctx.raw or ""))
 
 
 def _u1_real_hit(root: Path, cwd: str, pat: str) -> "str | None":
@@ -1328,6 +1459,8 @@ class _Word(str):
     body = None
     # round 4 (Quinn X): a $'...' escape in it that bash and zsh decode differently
     ansi_amb = False
+    # 1.0.0 (Cyra f8, item a): a `<` that starts zsh's `<N-M>` number-range glob
+    zsh_range = False
 
 
 def _mkword(parts, op: bool = False) -> "_Word":
@@ -1688,6 +1821,8 @@ def _scan(cmd: str) -> list:
                 toks[-1].fd = True
             op = next(o for o in _OPS if cmd.startswith(o, i))
             toks.append(_mkword([("raw", op)], op=True))
+            if c == "<" and _ZSH_RANGE.match(cmd, i):
+                toks[-1].zsh_range = True  # Cyra f8 (a): zsh reads `<N-M>` as a glob
             i += len(op)
             if op in ("<<", "<<-"):
                 docs.append((len(toks), op == "<<-"))
@@ -1988,6 +2123,8 @@ ADVICE = {
                 "older copy on purpose, run the git command yourself outside the agent.",
     "brainhook": "Claude Code and Codex run the brain's hooks themselves; there is nothing to run "
                  "by hand. To record something you said, use `tessbrain.py decide` or `remember`.",
+    "taskstart": "Claude Code runs the gate's task-start hook itself when you send a prompt; "
+                 "there is nothing to run by hand. A new prompt starts a new task.",
     "brainstore": "Run brain commands with the runtime's normal transcript folder. A moved folder "
                   "counts once that runtime's own hook has run with it, or once you confirm it "
                   "at your own terminal.",
@@ -4231,7 +4368,8 @@ def _ifs(ctx: "_Ctx"):
 def _val_chunk(x: str, quoted: bool, assign: bool) -> tuple:
     if quoted or assign:
         return (x, _gescape(x), False, False)
-    return (x, x, bool(_GLOB_CHARS.search(x)), True)
+    # 1.0.0 (Cyra f8, item a): zsh GLOB_SUBST + EXTENDED_GLOB, the worst case
+    return (x, x, bool(_GLOB_WORST.search(x)), True)
 
 
 def _part_alts(kind: str, t: str, quoted: bool, first: bool, cwd, ctx: "_Ctx", assign: bool):
@@ -4247,8 +4385,8 @@ def _part_alts(kind: str, t: str, quoted: bool, first: bool, cwd, ctx: "_Ctx", a
             t = _tilde(t, cwd, ctx)
             if t is None:
                 return None
-        g = not assign and bool(_GLOB_CHARS.search(t))
-        return [[(t, t if g else _gescape(t), g, False)]]
+        g = not assign and bool(_GLOB_WORST.search(t))  # Cyra f8 (a): `^ ~ #` too
+        return [[(t, _ext_mark(t) if g else _gescape(t), g, False)]]
     if kind in ("var", "sub"):
         vals = _var_values(t, cwd, ctx) if kind == "var" else _sub_values(t, cwd)
         if vals is None:
@@ -4296,11 +4434,14 @@ def _split_fields(chunks: list, ifs) -> list | None:
                 cur = None
             if piece:
                 cur = cur or ["", "", False]
-                cur[0], cur[1] = cur[0] + piece, cur[1] + piece
-                cur[2] = cur[2] or bool(_GLOB_CHARS.search(piece))
+                cur[0], cur[1] = cur[0] + piece, cur[1] + _ext_mark(piece)
+                cur[2] = cur[2] or bool(_GLOB_WORST.search(piece))
     if cur is not None:
         fields.append(cur)
-    return [(f[0], _shell_glob(f[1]) if f[2] else None) for f in fields]
+    # 1.0.0 (Cyra f8, item a): a field with no wildcard is written as it is,
+    # so its marks are dropped; one with a wildcard is read under the worst
+    # case of the shell options (_ext_glob).
+    return [(f[0], _shell_glob(_ext_glob(f[1])) if f[2] else None) for f in fields]
 
 
 def _word_fields(word, cwd: str | None, ctx: "_Ctx | None", limit: int = _EXPAND_LIMIT,
@@ -4873,12 +5014,12 @@ def _link_may_redirect(root: Path, cwd: str | None, word, ctx: "_Ctx | None") ->
                                 budget[0] -= len(dn) + len(fn)
                                 if budget[0] < 0:
                                     return True
-                                dn[:] = [d for d in dn if not d.startswith(".")]
+                                # 1.0.0 (Cyra f8, item a): dot folders are walked
+                                # too (GLOB_DOTS, dotglob: the worst case).
                                 # 1.0.x (Reid E4): a link to a file, or a dangling
                                 # one, is listed with the files, not the folders.
                                 if "***" in seg and any(
-                                        os.path.islink(os.path.join(dp, f))
-                                        for f in fn if not f.startswith(".")):
+                                        os.path.islink(os.path.join(dp, f)) for f in fn):
                                     return True
                                 for d in list(dn):
                                     _tick()  # E8: budget check per iteration
@@ -4975,8 +5116,12 @@ def _through_links(path: str, cwd: str, ctx: "_Ctx") -> str | None:
 
 
 def _seg_match(name: str, pat: str) -> bool:
-    if name.startswith(".") and not pat.startswith("."):
-        return False  # a glob does not match a dot file unless it starts with a dot
+    # 1.0.0 (Cyra f8, item a): a glob matches a dot name too. With default
+    # options it does not, but zsh GLOB_DOTS and bash dotglob make it, and the
+    # agent's shell runs with the operator's options (the worst case counts).
+    # `.` and `..` are never listed, and no option makes a wildcard match them.
+    if name in (".", ".."):
+        return False
     return fnmatch.fnmatchcase(name.lower(), _shell_glob(pat).lower())
 
 
@@ -5130,16 +5275,29 @@ _CONTROL_SUFFIXES = (".claude/settings.json", ".claude/settings.local.json", ".c
 _CONTROL_DIRS = (".claude", ".codex", ".gemini", ".tess")
 
 
-def _control_suffix(path: str) -> str | None:
+def _seg_match_default(name: str, pat: str) -> bool:
+    """_seg_match under the shells' default options: a glob does not match a
+    dot name unless the glob itself starts with a dot."""
+    if name.startswith(".") and not pat.startswith("."):
+        return False
+    return _seg_match(name, pat)
+
+
+def _control_suffix(path: str, dots: bool = False) -> str | None:
+    """The control file or folder `path` (text, globs read as globs) can end
+    on. `dots`: a glob step matches a dot name too (the worst case, see
+    _ext_glob); without it, the default options (the callers that read a
+    glob as written, before any listing)."""
+    match = _seg_match if dots else _seg_match_default
     comps = [c for c in re.sub(r"\\(.)", r"\1", path).lower().split("/") if c not in ("", ".")]
-    if comps and any(_seg_match(d, comps[-1]) for d in _CONTROL_DIRS):
-        return next(d for d in _CONTROL_DIRS if _seg_match(d, comps[-1])) + "/"
+    if comps and any(match(d, comps[-1]) for d in _CONTROL_DIRS):
+        return next(d for d in _CONTROL_DIRS if match(d, comps[-1])) + "/"
     for entry in _CONTROL_SUFFIXES:
         tree = entry.endswith("/**")
         eparts = (entry[:-3] if tree else entry).split("/")
         for i in range(len(comps) - len(eparts) + 1):
             _tick()  # E8: budget check per iteration
-            if all(e == c or _seg_match(e, c) for e, c in zip(eparts, comps[i:i + len(eparts)])):
+            if all(e == c or match(e, c) for e, c in zip(eparts, comps[i:i + len(eparts)])):
                 if tree or i + len(eparts) == len(comps):
                     return entry
     return None
@@ -5159,6 +5317,27 @@ def _word_suffix_hit(word, cands, cwd: str | None, ctx: "_Ctx | None") -> str | 
         hit = _control_suffix(t)
         if hit:
             return hit
+    # 1.0.0 (Cyra f8, item a): under the worst case of the shell options a
+    # glob step also matches dot names, and `^ ~ #` are wildcards (each
+    # pattern below is already the plain glob of _ext_glob). Such a step
+    # matches only names that exist when the shell lists the folder, so a
+    # pattern that can end on a control name only that way is decided from
+    # the listing: it asks when the listing is incomplete, when something in
+    # the command can change files first (_u1_quiet), or when a name it lists
+    # ends on a control file or folder.
+    for _t, pat in cands or []:
+        _tick()  # E8: budget check per iteration
+        hit = pat and _control_suffix(pat, dots=True)
+        if not hit:
+            continue
+        found = _glob(cwd or os.getcwd(), pat)
+        if found.truncated or ctx is None or not _u1_quiet(ctx):
+            return hit
+        for f in found:
+            _tick()  # E8: budget check per iteration
+            got = _control_suffix(f)
+            if got:
+                return got
     return None
 
 
@@ -6730,6 +6909,23 @@ _BRAIN_HOOK_DENY = ("it runs the brain's hook handler from an agent's shell. Onl
                     "agent wrote as yours")
 _BRAIN_TEXT_ASK = ("it hands {what} to {prog}, and Tess cannot tell whether that runs the brain's "
                    "hook handler or moves the folder the brain reads your conversations from")
+# 1.0.0 (Cyra f8 review, item c): the gate's own task-start handler
+# (`tess-gate.py --task-start`, the UserPromptSubmit hook that gives each
+# operator prompt a fresh budget of three agents) also trusts its caller: run
+# from an agent's shell it would reset the agent's own budget. It goes through
+# the same rule as the brain's hook handler: DENY when a word names the gate
+# script and a later word is the literal flag, under any program (directly,
+# the pinned launcher, sh -c, find -exec, an unknown program); ASK (Codex:
+# refuse) when the text a program is handed names the handler and Tess cannot
+# show what runs. Each entry: (rule tag, script names, test on the words after
+# the script, the refusal).
+_GATE_SCRIPTS = ("tess-gate.py", "tess-gate")
+_TASK_START_TEXT = re.compile(r"task[-_]?start")
+_TASK_START_DENY = ("it runs the gate's task-start handler from an agent's shell. Only Claude Code "
+                    "runs that handler, as a hook when you send a prompt; run by an agent, it would "
+                    "reset the agent's own budget of three agents per task")
+_TASK_START_ASK = ("it hands text naming the gate's task-start handler to {prog}, and Tess cannot "
+                   "tell whether that resets the budget of three agents per task")
 
 
 def _brain_squeeze(text: str) -> str:
@@ -6762,6 +6958,17 @@ def _brain_names(text: str) -> list:
     if _BRAIN_ENV_TEXT.search(sq):
         out.append("text naming a transcript-folder variable")
     return out
+
+
+def _hook_only_handlers() -> tuple:
+    """The handlers only a runtime may run, as a hook (see above): (rule tag,
+    script names, test on (words, index of the script), refusal)."""
+    return (
+        ("brainhook", _BRAIN_SCRIPTS,
+         lambda words, i: (_brain_cli_sub(words, i)[0] or "").lower() == "hook", _BRAIN_HOOK_DENY),
+        ("taskstart", _GATE_SCRIPTS, lambda words, i: "--task-start" in words[i + 1:],
+         _TASK_START_DENY),
+    )
 
 
 def _brain_store_text(cmd: str) -> list:
@@ -6831,14 +7038,15 @@ def _check_brain_surface(root: Path, cwd, env: dict, argv: list, orig, name: str
         v.add(DENY, f"it sets {', '.join(moved + set_here)} in a command that runs the brain; a moved "
                     "transcript folder would let the agent choose which conversations the brain "
                     "records as yours", "brainstore")
-    # (2) the brain's own scripts named as a word, under any program
+    # (2) a hook-only handler named as a word, under any program: the brain's
+    # hook handler, and (Cyra f8, item c) the gate's task-start handler
     for i, w in enumerate(words):
         _tick()
-        if os.path.basename(w).lower() not in _BRAIN_SCRIPTS:
-            continue
-        sub, j = _brain_cli_sub(words, i)
-        if sub is not None and sub.lower() == "hook":
-            v.add(DENY, _BRAIN_HOOK_DENY, "brainhook")
+        base = os.path.basename(w).lower()
+        for tag, scripts, runs_it, why in _hook_only_handlers():
+            _tick()
+            if base in scripts and runs_it(words, i):
+                v.add(DENY, why, tag)
     if not env and _brain_cli_ok(root, cwd, argv, words, name):
         return
     # (3) everything this segment is handed, read as text, whatever the program
@@ -6856,6 +7064,8 @@ def _check_brain_surface(root: Path, cwd, env: dict, argv: list, orig, name: str
     hits = sorted(set(hits + _brain_names(" ".join(piped))))
     if hits:
         v.add(ASK, _BRAIN_TEXT_ASK.format(what=" and ".join(hits), prog=name or "a program"))
+    if _TASK_START_TEXT.search(_brain_squeeze(" ".join(texts + piped))):
+        v.add(ASK, _TASK_START_ASK.format(prog=name or "a program"))
 
 
 def _check_home_env(env: dict, argv: list, raw: str, v: Verdict) -> None:
@@ -8061,6 +8271,9 @@ def _nested_runtime() -> str:
 #     asks. A payload with no session_id is not a runtime call and is not
 #     counted.
 AGENT_BUDGET = 3
+# Seconds one call waits for the counter's lock (Reid f8, L1); far below the
+# gate's own GATE_BUDGET and the launcher's deadline.
+AGENT_BUDGET_LOCK_WAIT = 5.0
 
 
 def _budget_file(session) -> "str | None":
@@ -8081,7 +8294,20 @@ def _budget_open(path: str) -> int:
         raise OSError("the agent budget folder is not this user's own folder")
     fd = os.open(path, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
+        # 1.0.0 (Reid f8 review, L1): never an unbounded wait. The lock is
+        # tried without blocking, inside the gate's time budget (_tick), and
+        # given up after AGENT_BUDGET_LOCK_WAIT seconds, well before the
+        # launcher's deadline: the caller then asks (Codex: refuses).
+        start = time.monotonic()
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except (BlockingIOError, InterruptedError):
+                _tick()
+                if time.monotonic() - start >= AGENT_BUDGET_LOCK_WAIT:
+                    raise OSError("another call holds the agent budget counter")
+                time.sleep(0.05)
     except BaseException:
         os.close(fd)
         raise
@@ -9387,6 +9613,12 @@ def _bind_positional(argv: list, ctx: "_Ctx") -> list:
 _PAREN_ASK = ("a `(` comes inside a command's arguments: zsh reads it as part of a file-name "
               "pattern (alternatives, or glob qualifiers that can run code) and bash refuses it, "
               "so Tess cannot tell which files it names; quote it")
+# 1.0.0 (Cyra f8, item a): `<N-M>` (and `<->`) inside or as a word is a
+# number-range glob in zsh, with its default options, and two redirections in
+# bash; Tess reads only the bash meaning, so it asks.
+_ZSH_RANGE = re.compile(r"<\d*-\d*>")
+_ZSH_RANGE_ASK = ("`<N-M>` is a file-name pattern in zsh (a number range) and two redirections in "
+                  "bash, so Tess cannot tell which files it names; quote it")
 _OPTION_ASK = ("it changes a shell option ({opt}) that alters how later words expand (dot files, "
                "recursion, letter case, extended patterns, splitting), which Tess does not model; "
                "run the option change on its own, or leave it out")
@@ -9669,6 +9901,8 @@ def check_command(root: Path, cwd: str, cmd: str, v: Verdict, depth: int = 0, ct
         check_command(root, cwd, stripped, v, depth, _Ctx(stripped, ctx) if ctx is not None else None)
     if any(getattr(w, "ansi_amb", False) for k, x in events if k == "seg" for w in x):
         v.add(ASK, _ANSI_AMB_ASK)
+    if any(getattr(w, "zsh_range", False) for k, x in events if k == "seg" for w in x):
+        v.add(ASK, _ZSH_RANGE_ASK)
     _check_shell_model(events, v)
     _check_archive_pipe([x for k, x in events if k == "seg"], v)
     start = None if cwd is _NOWHERE else (cwd or str(root))

@@ -91,7 +91,6 @@ U1_ALLOW = [
     ("rm-dist", "rm -rf **/dist"),
     ("rm-node-modules", "rm -rf **/node_modules"),
     ("rm-egg-info", "rm -rf **/*.egg-info"),
-    ("chmod-sh", "chmod +x **/*.sh"),
     ("rm-scripts-pycache", "rm -rf scripts/**/__pycache__"),
     ("cd-then-rm", "cd src && rm -rf **/__pycache__"),
     ("triple-star", "rm -rf ***/__pycache__"),
@@ -116,6 +115,9 @@ U1_STILL_DENY = [
     ("real-md-match", "sed -i '' s/a/b/ **/*.md"),
     ("real-py-match", "rm -f **/*.py"),
     ("climbs-out", "rm -rf **/../**/hooks"),
+    # 1.0.0 (Cyra/Reid f8 review): read with dot names matched (GLOB_DOTS,
+    # dotglob: the worst case), `**/*.sh` names .claude/hooks/*.sh
+    ("chmod-sh", "chmod +x **/*.sh"),
 ]
 
 

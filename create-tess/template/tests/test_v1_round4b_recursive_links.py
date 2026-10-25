@@ -159,7 +159,7 @@ def test_z1_run_time_part_before_a_recursive_step_asks(proj, W):  # noqa: F811
     (["a", "b", "lk"], ["**", "lk"], False, False),        # the last step names the link itself
     (["a", "b", "lk"], ["**", "lk"], True, True),          # ... unless a `/` follows
     (["a", "b", "lk"], ["**", "zz", "f"], False, False),   # a step that does not fit
-    (["a", ".h", "lk"], ["***", "f"], False, False),       # `***` skips hidden folders
+    (["a", ".h", "lk"], ["***", "f"], False, True),        # hidden folders too (GLOB_DOTS, f8)
     (["p", "q", "lp"], ["p***", "q", "lp", "f"], False, True),  # `p***` is one step
     (["x", "lk"], ["x", "***", "f"], False, True),
 ])

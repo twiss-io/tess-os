@@ -24,6 +24,12 @@ user config):
     the jail refuses a write outside the sandbox before anything runs.
   * Each command gets a fresh copy of the pristine sandbox, a timeout, and its
     own process group, which is the only thing ever signalled.
+
+1.0.0 (Cyra f8 review, item a): Claude Code runs an agent's commands with the
+operator's own shell options, so every shell also runs with the options that
+make globs match the most: zsh with GLOB_DOTS and EXTENDED_GLOB, bash with
+dotglob and extglob (and globstar where the bash has it). Such a run is named
+`<shell>+worst` (WORST_SUFFIX).
 """
 
 from __future__ import annotations
@@ -470,13 +476,42 @@ def _jailed(argv: list, base: str) -> list:
             "--new-session"] + argv
 
 
-def shells() -> list:
+WORST_SUFFIX = "+worst"
+_GLOBSTAR: dict = {}
+
+
+def plain_shells() -> list:
     """Every distinct bash and zsh on this machine (the stock ones first)."""
     out = []
     for cand in ("/bin/bash", shutil.which("bash"), "/bin/zsh", "/usr/bin/zsh", shutil.which("zsh")):
         if cand and os.path.exists(cand) and os.path.realpath(cand) not in {os.path.realpath(x) for x in out}:
             out.append(cand)
     return out
+
+
+def shells() -> list:
+    """Every shell run: each bash and zsh with its default options, then each
+    again with the worst-case glob options (`<shell>+worst`, see above)."""
+    plain = plain_shells()
+    return plain + [sh + WORST_SUFFIX for sh in plain]
+
+
+def shell_argv(shell: str) -> list:
+    """The program and flags of one shell run (no startup files)."""
+    worst = shell.endswith(WORST_SUFFIX)
+    prog = shell[:-len(WORST_SUFFIX)] if worst else shell
+    if "zsh" in os.path.basename(prog):
+        return [prog, "-f"] + (["-o", "globdots", "-o", "extendedglob"] if worst else [])
+    flags = ["--noprofile", "--norc"]
+    if worst:
+        flags += ["-O", "dotglob", "-O", "extglob"]
+        if prog not in _GLOBSTAR:  # bash 3.2 (macOS) has no globstar
+            _GLOBSTAR[prog] = subprocess.run([prog, "--noprofile", "--norc", "-O", "globstar", "-c", "true"],
+                                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                             stderr=subprocess.DEVNULL).returncode == 0
+        if _GLOBSTAR[prog]:
+            flags += ["-O", "globstar"]
+    return [prog] + flags
 
 
 def run_shell(shell: str, cmd: str, s: dict) -> tuple:
@@ -486,8 +521,7 @@ def run_shell(shell: str, cmd: str, s: dict) -> tuple:
            "HOME": s["H"], "XDG_CONFIG_HOME": s["H"] + "/.config", "TMPDIR": s["T"],
            "ZDOTDIR": s["H"], "LANG": "C", "PWD": s["P"], "GIT_CONFIG_NOSYSTEM": "1",
            "TESS_GATE_LOG": os.devnull}
-    flags = ["-f"] if "zsh" in os.path.basename(shell) else ["--noprofile", "--norc"]
-    argv = _jailed([shell] + flags + ["-c", cmd], base)
+    argv = _jailed(shell_argv(shell) + ["-c", cmd], base)
     proc = subprocess.Popen(argv, cwd=s["P"], env=env, stdin=subprocess.DEVNULL,
                             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, start_new_session=True)
     try:
