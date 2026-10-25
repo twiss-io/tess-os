@@ -47,6 +47,7 @@ import importlib.util
 import sys
 import json
 import os
+import re
 import platform
 import shutil
 import signal
@@ -313,10 +314,27 @@ def home_controlled(rel: str, gate, s: dict) -> bool:
 def changed_controls(before: dict, after: dict, gate, s: dict) -> list:
     keys = set(before) | set(after)
     return sorted(k for k in keys if before.get(k) != after.get(k) and controlled(k, gate, s)
-                  and not _true_snapshot(k, before, after, s.get("P")))
+                  and not _true_snapshot(k, before, after, s.get("P"))
+                  and not _new_run_trace(k, before, after))
 
 
 SNAPSHOTS = ".tess/snapshots/"
+RUN_TRACES = ".tess/trace/runs/"
+
+
+def _new_run_trace(rel: str, before: dict, after: dict) -> bool:
+    """A new run-telemetry file `tessctl` writes itself
+    (`.tess/trace/runs/<id>.jsonl`, local runtime state the gate does not
+    protect and no Tess step reads as trusted input), or the new folders that
+    hold it. A changed or removed trace, a link, an executable or any other
+    name there counts (1.0.0, a769130 review: `tessctl gate pre-push`)."""
+    if rel in (".tess/trace", RUN_TRACES.rstrip("/")):
+        return before.get(rel) is None and (after.get(rel) or ("",))[0] == "dir"
+    if not rel.startswith(RUN_TRACES) or before.get(rel) is not None or rel not in after:
+        return False
+    name, new = rel[len(RUN_TRACES):], after[rel]
+    return ("/" not in name and re.fullmatch(r"[A-Za-z0-9_-]+\.jsonl", name) is not None
+            and new[0] == "file" and not (new[1] & 0o111))
 
 
 def _true_snapshot(rel: str, before: dict, after: dict, root: "str | None" = None) -> bool:

@@ -334,6 +334,27 @@ def test_only_an_exact_restore_snapshot_is_not_counted():
     assert not sc._true_snapshot(".tess/snapshots/t0/x", old, changed)
 
 
+def test_only_a_new_run_trace_file_is_not_counted():
+    """`tessctl` writes its run telemetry to a new `.tess/trace/runs/<id>.jsonl`
+    (local runtime state the gate does not protect); a changed or removed
+    trace file, or anything else under `.tess/trace/`, still counts."""
+    before = {"CLAUDE.md": ("file", 0o644, "h1")}
+    new = {".tess/trace": ("dir", 0o755), ".tess/trace/runs": ("dir", 0o755),
+           ".tess/trace/runs/0123abcd.jsonl": ("file", 0o644, "t1")}
+    after = {**before, **new}
+    assert all(sc._new_run_trace(k, before, after) for k in new)
+    old = {**before, ".tess/trace": ("dir", 0o755), ".tess/trace/runs": ("dir", 0o755),
+           ".tess/trace/runs/old.jsonl": ("file", 0o644, "t0")}
+    assert not sc._new_run_trace(".tess/trace/runs/old.jsonl", old,
+                                 {**old, ".tess/trace/runs/old.jsonl": ("file", 0o644, "t9")})
+    assert not sc._new_run_trace(".tess/trace/other.json", before,
+                                 {**after, ".tess/trace/other.json": ("file", 0o644, "x")})
+    assert not sc._new_run_trace(".tess/trace/runs/x.sh", before,
+                                 {**after, ".tess/trace/runs/x.sh": ("file", 0o755, "x")})
+    assert not sc._new_run_trace(".tess/trace/runs/l.jsonl", before,
+                                 {**after, ".tess/trace/runs/l.jsonl": ("link", "x")})
+
+
 def test_a_restore_manifest_counts_unless_it_matches_the_project(tmp_path):
     before = {"CLAUDE.md": ("file", 0o644, "h1"), "lnk": ("link", "x")}
     rel = ".tess/snapshots/t1/manifest.json"
