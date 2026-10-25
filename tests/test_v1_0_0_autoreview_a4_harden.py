@@ -78,7 +78,8 @@ def test_run_sudo_stops_before_sudo_when_a_path_became_a_link(anchored, engine, 
                         lambda argv, **k: calls.append(argv) or subprocess.CompletedProcess(argv, 0))
     # clean tree: sudo is invoked, with -h/-- for chflags, and recheck passes
     rc = engine._harden_run_sudo(root, ["chflags", "schg"], rels, ids)
-    assert rc == 0 and calls and calls[0][:5] == ["sudo", "--", "chflags", "-h", "--"]
+    assert rc == 0 and calls and calls[0] == ["sudo", "-v"]
+    assert calls[1][:6] == ["sudo", "-n", "--", "chflags", "-h", "--"]
     # now swap a path for a link and expect a hard stop, with no sudo run
     calls.clear()
     victim = ".claude/hooks/tess-gate.py"
@@ -91,7 +92,7 @@ def test_run_sudo_stops_before_sudo_when_a_path_became_a_link(anchored, engine, 
             engine._harden_run_sudo(root, ["chflags", "schg"], rels, ids)
         assert "changed after they were listed" in str(exc.value.code)
         assert victim in str(exc.value.code)
-        assert calls == []
+        assert calls == [["sudo", "-v"]]  # authenticated only; no flag call
     finally:
         if p.is_symlink():
             p.unlink()
@@ -136,4 +137,106 @@ def test_off_also_rechecks_and_passes_the_link_switch(anchored, engine, monkeypa
     monkeypatch.setattr(engine.subprocess, "run",
                         lambda argv, **k: calls.append(argv) or subprocess.CompletedProcess(argv, 0))
     rc = engine._harden_run_sudo(root, ["chflags", "noschg"], rels, ids)
-    assert rc == 0 and calls[0][:5] == ["sudo", "--", "chflags", "-h", "--"]
+    assert rc == 0 and calls[0] == ["sudo", "-v"]
+    assert calls[1][:6] == ["sudo", "-n", "--", "chflags", "-h", "--"]
+
+
+# ---------------------------------------------------------------------------
+# RC hardening (automated push review): sudo may ask for a password, and a
+# path step can change while it waits. Each batch now authenticates first
+# (`sudo -v`, no privileged action), THEN re-checks every step with lstat,
+# THEN applies the flag with `sudo -n` (which never prompts, so no new wait
+# opens between the re-check and the call). The identity check afterwards is
+# unchanged. A fake `sudo` shim on PATH stands in; the real sudo never runs.
+# ---------------------------------------------------------------------------
+
+_SUDO_SHIM = r'''#!/usr/bin/env python3
+import json, os, sys
+with open(os.environ["FAKE_SUDO_LOG"], "a") as fh:
+    fh.write(json.dumps(sys.argv[1:]) + "\n")
+swap = os.environ.get("FAKE_SUDO_SWAP_ON_AUTH")
+if sys.argv[1:] == ["-v"] and swap:
+    # what another process could do while sudo waits for the password:
+    # replace a parent folder step with a symlink to a copy of it
+    real = swap + ".during-prompt"
+    os.rename(swap, real)
+    os.symlink(real, swap)
+sys.exit(0)
+'''
+
+
+@pytest.fixture
+def sudo_shim(tmp_path, monkeypatch):
+    import json as _json
+    import shutil as _shutil
+    bindir = tmp_path / "shim-bin"
+    bindir.mkdir()
+    shim = bindir / "sudo"
+    shim.write_text(_SUDO_SHIM)
+    shim.chmod(0o755)
+    log = tmp_path / "sudo.log"
+    monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ.get('PATH', '')}")
+    monkeypatch.setenv("FAKE_SUDO_LOG", str(log))
+    monkeypatch.delenv("FAKE_SUDO_SWAP_ON_AUTH", raising=False)
+    # never the real sudo
+    assert _shutil.which("sudo") == str(shim)
+
+    def calls():
+        return [_json.loads(x) for x in log.read_text().splitlines()] if log.exists() else []
+    return calls
+
+
+def test_run_sudo_authenticates_before_the_recheck_and_never_prompts_after_it(anchored, engine, sudo_shim):
+    root = anchored
+    rels = engine._harden_paths(root)
+    ids = {r: engine._harden_ident(root / r) for r in rels}
+    rc = engine._harden_run_sudo(root, ["chflags", "schg"], rels, ids)
+    calls = sudo_shim()
+    assert rc == 0
+    assert calls[0] == ["-v"], calls
+    assert calls[1][:5] == ["-n", "--", "chflags", "-h", "--"], calls
+    assert all(c == ["-v"] or c[:2] == ["-n", "--"] for c in calls)
+
+
+def test_a_parent_step_swapped_for_a_link_during_the_password_prompt_is_refused(anchored, engine, sudo_shim,
+                                                                                monkeypatch):
+    root = anchored
+    rels = engine._harden_paths(root)
+    ids = {r: engine._harden_ident(root / r) for r in rels}
+    folder = root / ".tess" / "bin"
+    below = [r for r in rels if r.startswith(".tess/bin/")]
+    assert below
+    monkeypatch.setenv("FAKE_SUDO_SWAP_ON_AUTH", str(folder))
+    try:
+        with pytest.raises(SystemExit) as exc:
+            engine._harden_run_sudo(root, ["chflags", "schg"], rels, ids)
+        assert "changed after they were listed" in str(exc.value.code)
+        # authenticated, then the re-check caught the swapped parent step:
+        # no flag call was ever made
+        assert sudo_shim() == [["-v"]]
+    finally:
+        if folder.is_symlink():
+            real = Path(os.readlink(str(folder)))
+            folder.unlink()
+            os.rename(str(real), str(folder))
+
+
+def test_recheck_refuses_a_symlinked_parent_step_even_when_the_leaf_is_unchanged(anchored, engine):
+    root = anchored
+    rels = engine._harden_paths(root)
+    ids = {r: engine._harden_ident(root / r) for r in rels}
+    folder = root / ".tess" / "bin"
+    moved = root / ".tess" / "bin.moved"
+    os.rename(str(folder), str(moved))
+    os.symlink(str(moved), str(folder))
+    try:
+        below = [r for r in rels if r.startswith(".tess/bin/") and "/" not in r[len(".tess/bin/"):]]
+        assert below
+        # the leaf files keep their inodes through the link; only the parent step changed
+        assert all(engine._harden_ident(moved / Path(r).name) == ids[r] for r in below)
+        bad = engine._harden_recheck(root, rels, ids)
+        assert set(below) <= set(bad)
+        assert ".tess/bin" in bad
+    finally:
+        folder.unlink()
+        os.rename(str(moved), str(folder))

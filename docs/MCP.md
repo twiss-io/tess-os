@@ -133,7 +133,7 @@ Runs the same schema + relational-lint pass as `tessctl validate
 | Field | Type | Required | Notes |
 |---|---|---|---|
 | `contract_type` | string | yes | one of `brief`, `crew-plan`, `verdict`, `return-manifest`, `mission`, `retry`, `policy` |
-| `path` | string | one of `path`/`content` | resolved against the tess project root if relative |
+| `path` | string | one of `path`/`content` | relative to the tess project root; an absolute path, or one whose real path (links followed) leaves the root, is refused with a `-32602` error that names nothing from the file |
 | `content` | string | one of `path`/`content` | inline instance content — for a draft that isn't on disk yet |
 | `format` | string | required with `content` | one of `json`, `yaml`, `yml`, `md` |
 
@@ -163,9 +163,13 @@ mutable base returns a normal blocked result containing `BASE_REQUIRED`.
 | `head` | string | no | git ref/sha; defaults to current `HEAD` |
 | `verdict_dirs` | string[] | no | restrict covering-verdict discovery to these directories |
 
-Result: `{blocked, reasons[], changed_paths[], base, head}` — identical shape
-(plus the resolved `base`/`head`) to `tessctl gate pre-push --base X --head
-Y --json`'s `result` for the same `changed_paths`/refs. See
+Result: `{blocked, reasons[], changed_paths_count, receipts_written,
+receipts_note}` — the same decision (`blocked`, `reasons`) as `tessctl gate
+pre-push --base X --head Y --json` for the same paths and refs; raw paths
+are not echoed, only their count. The tool is read-only: even on a pass it
+never runs the receipt tooling, never signs an Agent Receipt and never writes
+`.tess/state/receipts/chain.jsonl` (`receipts_written` is always `false`);
+receipts are emitted only by `tessctl gate pre-push` and `tessctl gate ci`. See
 `tests/test_mcp_serve.py` for the equivalence proof against a real fixture
 repo (BLOCKED and ALLOWED cases), and the explicit no-base denial test.
 

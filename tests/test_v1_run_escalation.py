@@ -514,7 +514,8 @@ FAKE_AGENT = textwrap.dedent(r'''
     with open(os.environ["FAKE_AGENT_LOG"], "a") as fh:
         fh.write(json.dumps({"prog": prog, "argv": argv, "cwd": os.getcwd(),
                              "env": {k: os.environ.get(k) for k in
-                                     ("TESS_DISPATCHED", "TESS_HEADLESS", "TESS_CONSULT_DEPTH")}}) + "\n")
+                                     ("TESS_DISPATCHED", "TESS_HEADLESS", "TESS_CONSULT_DEPTH",
+                                      "CLAUDE_CODE_SIMPLE", "CLAUDE_CODE_SAFE_MODE")}}) + "\n")
     mode = os.environ.get("FAKE_AGENT_MODE", "good")
     root = os.environ["FAKE_AGENT_ROOT"]
     ret = os.path.join(root, os.environ["FAKE_AGENT_RET"])
@@ -616,7 +617,8 @@ def test_codex_worker_in_a_linked_worktree_checkout_runs_read_only(eng, fake_age
     assert "workspace-write" not in argv and "danger-full-access" not in argv
     assert not _within(argv[argv.index("-o") + 1], wt)  # -o is outside the project
     assert os.path.realpath(call["cwd"]) == os.path.realpath(str(wt))
-    assert call["env"] == {"TESS_DISPATCHED": "1", "TESS_HEADLESS": None, "TESS_CONSULT_DEPTH": "1"}
+    assert call["env"] == {"TESS_DISPATCHED": "1", "TESS_HEADLESS": None, "TESS_CONSULT_DEPTH": "1",
+                           "CLAUDE_CODE_SIMPLE": None, "CLAUDE_CODE_SAFE_MODE": None}
     # the artifact is installed at the contracted path, a regular file
     ret = wt / "missions/m1/returns/t1.return.json"
     assert not ret.is_symlink() and json.loads(ret.read_text()) == {"from": "child"}
@@ -749,6 +751,39 @@ def test_dispatched_children_keep_brain_hooks_and_quiet_the_dispatch_guard(eng, 
                                env={**base, "TESS_DISPATCHED": "1"}, timeout=60)
         assert quiet.stdout.strip() == ""
         assert loud.stdout.strip() != ""
+
+
+@pytest.mark.parametrize("prog", ["claude", "codex"])
+def test_dispatched_child_never_inherits_the_hook_skip_variables(eng, fake_agents, monkeypatch, prog):
+    """Audit addendum unit 3: the gate refuses a direct claude call whose
+    environment skips Tess's hooks while the child has tools; the tessctl
+    run child (claude with Write/Edit) must not inherit those variables."""
+    root, calls = fake_agents
+    monkeypatch.delenv("TESS_CONSULT_DEPTH", raising=False)
+    for k in ("CLAUDE_CODE_SIMPLE", "CLAUDE_CODE_SAFE_MODE"):
+        monkeypatch.setenv(k, "1")
+    driver = eng.CodexExecDriver(cwd=root) if prog == "codex" else eng.ClaudeCliDriver(cwd=root)
+    driver.dispatch(_brief(root))
+    rec = calls()[0]
+    assert rec["prog"] == prog
+    for k in ("CLAUDE_CODE_SIMPLE", "CLAUDE_CODE_SAFE_MODE"):
+        assert rec["env"][k] is None, (k, rec["env"])
+    assert rec["env"]["TESS_DISPATCHED"] == "1"
+    # The child environment builder itself never carries them.
+    env = eng._run_child_env()
+    assert not {"CLAUDE_CODE_SIMPLE", "CLAUDE_CODE_SAFE_MODE"} & set(env)
+
+
+def test_hook_skip_list_matches_the_gates_claude_rule(eng):
+    """The variables tessctl drops are the ones the gate's _parse_claude
+    treats as skipping Tess's hooks (read from the gate's source, which this
+    branch does not edit)."""
+    import re as _re
+    src = (REPO / ".claude" / "hooks" / "tess-gate.py").read_text(encoding="utf-8")
+    m = _re.search(r'for k in \(("CLAUDE_CODE_[A-Z_]+"(?:, "CLAUDE_CODE_[A-Z_]+")*)\):', src)
+    assert m, "the gate's hook-skip loop moved; update HOOK_SKIP_ENV and this test together"
+    gate_list = tuple(_re.findall(r'"([A-Z_]+)"', m.group(1)))
+    assert tuple(eng.HOOK_SKIP_ENV) == gate_list
 
 
 def test_safe_write_and_unlink_never_follow_links(eng, tmp_path):

@@ -21477,7 +21477,9 @@ def _anchor_show_changes(root: Path, st: AnchorState) -> None:
 #     (device and inode) when it is made. Right before each sudo call, every
 #     step of every path is checked again with lstat: a step that is now a
 #     symlink, or a path that is no longer the one listed, stops the run
-#     before sudo runs. macOS gets `chflags -h`, which acts on a link itself;
+#     before sudo runs. RC hardening: each batch first runs `sudo -v` (it
+#     only authenticates; any password prompt happens here), then the
+#     re-check, then the flag call with `sudo -n`, which never prompts. macOS gets `chflags -h`, which acts on a link itself;
 #     Linux `chattr` has no such switch, so there the re-check is what keeps
 #     it off links. After the call, the identities of the locked (or
 #     unlocked) set must equal the listed set, or the command fails loudly.
@@ -21582,9 +21584,11 @@ def _harden_state(root: Path) -> dict:
 
 
 def _harden_recheck(root: Path, rels: list, ids: dict) -> list:
-    """Right before a sudo call: the paths in `rels` that changed since they
-    were listed: a step of the path (below the project) that is now a
-    symlink, or a path that is gone or is no longer the listed file or folder."""
+    """Right before a sudo call (after sudo has authenticated): the paths in
+    `rels` that changed since they were listed: any step of the path between
+    the project root and the target (each folder on the way, and the target)
+    that is now a symlink, or a path that is gone or is no longer the listed
+    file or folder."""
     bad = []
     for rel in rels:
         p, ok = root, True
@@ -21637,14 +21641,24 @@ def _harden_run_sudo(root: Path, argv: list, rels: list, ids: "dict | None" = No
     rc = 0
     for i in range(0, len(rels), 200):
         batch = rels[i:i + 200]
+        # RC hardening: authenticate first. `sudo -v` only validates the
+        # operator (it may ask for the password) and runs nothing as root, so
+        # any wait for the password happens BEFORE the re-check, not between
+        # the re-check and the flag call.
+        if subprocess.run(["sudo", "-v"], cwd=str(root)).returncode != 0:
+            sys.exit("tessctl harden: STOPPED — sudo did not authenticate, so nothing more was "
+                     "changed. Run `tessctl harden status`.")
         bad = _harden_recheck(root, batch, ids)
         if bad:
             sys.exit(f"tessctl harden: STOPPED — {len(bad)} path(s) changed after they were listed "
-                     f"(for example {bad[0]}: now a symlink, gone, or another file or folder), so "
-                     f"sudo was not run on them. Something may be replacing Tess's files: run "
-                     f"`tessctl verify` and `tessctl harden status`.")
+                     f"(for example {bad[0]}: now a symlink, gone, another file or folder, or a "
+                     f"folder on the way is now a symlink), so sudo was not run on them. Something "
+                     f"may be replacing Tess's files: run `tessctl verify` and `tessctl harden status`.")
         files = [str(root / r) for r in batch]
-        rc = subprocess.run(["sudo", "--"] + _harden_argv(argv, files), cwd=str(root)).returncode or rc
+        # `-n`: never prompt here, so no new wait opens after the re-check. If
+        # sudo's cached authentication is off (timestamp_timeout=0), this call
+        # fails instead of asking, and the command reports it did not finish.
+        rc = subprocess.run(["sudo", "-n", "--"] + _harden_argv(argv, files), cwd=str(root)).returncode or rc
         if rc:
             break
     return rc
@@ -25207,6 +25221,14 @@ def _run_refuse_nested_dispatch(driver: str) -> None:
         )
 
 
+# Variables that make a claude child skip Tess's hooks or settings. The gate
+# refuses a direct claude call that sets one while the child has tools
+# (tess-gate.py _parse_claude / _check_agent_cli); the dispatched child has
+# Write and Edit, so it never inherits them. Kept equal to the gate's list
+# (tests/test_v1_run_escalation.py::test_hook_skip_list_matches_the_gates_claude_rule).
+HOOK_SKIP_ENV = ("CLAUDE_CODE_SIMPLE", "CLAUDE_CODE_SAFE_MODE")
+
+
 def _run_child_env() -> dict:
     """Environment for a dispatched agent CLI child (both drivers).
 
@@ -25218,10 +25240,13 @@ def _run_child_env() -> dict:
     deliberately NOT TESS_HEADLESS, which also silences every brain hook: a
     dispatched child's session sync and provenance are recorded like any
     other session's (Cyra F2). An inherited TESS_HEADLESS is removed for the
-    same reason."""
+    same reason, and so are the hook-skip variables (HOOK_SKIP_ENV), which
+    would otherwise switch off the child's own Tess gate."""
     _run_refuse_nested_dispatch("child")
     env = dict(os.environ)
     env.pop("TESS_HEADLESS", None)
+    for k in HOOK_SKIP_ENV:
+        env.pop(k, None)
     env["TESS_DISPATCHED"] = "1"
     env["TESS_CONSULT_DEPTH"] = "1"
     return env
@@ -31320,6 +31345,32 @@ class McpError(Exception):
 # JSON-RPC protocol error rather than a tool result.
 # ---------------------------------------------------------------------------
 
+_MCP_PATH_REFUSED = (
+    "validate_contract: `path` must be a relative path that stays inside the "
+    "project root (absolute paths, paths that climb out and links that "
+    "resolve outside are refused)"
+)
+
+
+def _mcp_confine_contract_path(root: Path, path_arg: str) -> Path:
+    """Confine validate_contract's `path` to the resolved project root.
+
+    An absolute path is refused. A relative path is resolved with realpath
+    (every link on the way and at the end is followed) and refused unless
+    the result is the root or lies under it, so a parent-directory step or
+    an in-root link to an outside file is caught. The refusal is a protocol
+    error with a fixed message: it never names the path, and the file is
+    never opened, so no key name, value or parser text can come back.
+    Returns the resolved path, which is what gets read."""
+    if not path_arg or "\x00" in path_arg or os.path.isabs(path_arg) or path_arg.startswith("~"):
+        raise McpError(JSONRPC_INVALID_PARAMS, _MCP_PATH_REFUSED)
+    real_root = os.path.realpath(str(root))
+    real = os.path.realpath(os.path.join(real_root, path_arg))
+    if real != real_root and not real.startswith(real_root.rstrip(os.sep) + os.sep):
+        raise McpError(JSONRPC_INVALID_PARAMS, _MCP_PATH_REFUSED)
+    return Path(real)
+
+
 def _mcp_tool_validate_contract(root: Path, arguments: dict) -> dict:
     """validate_contract — same schema+lint pass `tessctl validate` runs
     (cmd_validate, VALIDATE region above): load_contract_schema /
@@ -31329,7 +31380,8 @@ def _mcp_tool_validate_contract(root: Path, arguments: dict) -> dict:
     exactly like the CLI) or inline `content` + `format`
     (json|yaml|yml|md) for a draft instance that has not been written to
     disk yet (e.g. an agent still iterating on a brief in its own
-    context)."""
+    context). Unlike the CLI, `path` is confined to the project root
+    (_mcp_confine_contract_path)."""
     contract_type = arguments.get("contract_type")
     if not isinstance(contract_type, str) or not contract_type:
         raise McpError(JSONRPC_INVALID_PARAMS, "validate_contract: `contract_type` (string) is required")
@@ -31346,9 +31398,7 @@ def _mcp_tool_validate_contract(root: Path, arguments: dict) -> dict:
     if path_arg:
         if not isinstance(path_arg, str):
             raise McpError(JSONRPC_INVALID_PARAMS, "validate_contract: `path` must be a string")
-        file_path = Path(path_arg)
-        if not file_path.is_absolute():
-            file_path = root / file_path
+        file_path = _mcp_confine_contract_path(root, path_arg)
         label = str(file_path)
     else:
         if not isinstance(fmt_arg, str) or fmt_arg.lower().lstrip(".") not in ("json", "yaml", "yml", "md"):
@@ -31385,6 +31435,22 @@ def _mcp_tool_validate_contract(root: Path, arguments: dict) -> dict:
     return result
 
 
+_MCP_RECEIPTS_NOTE = (
+    "gate_check_paths is read-only: it never emits or signs Agent Receipts and "
+    "never writes the receipt chain; `tessctl gate pre-push` and `tessctl gate ci` do"
+)
+
+
+def _mcp_gate_result(result: dict) -> dict:
+    """_safe_gate_result plus the statement that no receipt was written."""
+    safe = _safe_gate_result(result)
+    safe.pop("receipts_emitted", None)
+    safe.pop("receipt_gaps", None)
+    safe["receipts_written"] = False
+    safe["receipts_note"] = _MCP_RECEIPTS_NOTE
+    return safe
+
+
 def _mcp_tool_gate_check_paths(root: Path, arguments: dict) -> dict:
     """gate_check_paths — the SAME verdict-coverage decision engine as
     `tessctl gate pre-push` / `tessctl gate ci`: calls _gate_run_ship_check()
@@ -31405,7 +31471,7 @@ def _mcp_tool_gate_check_paths(root: Path, arguments: dict) -> dict:
     # A branch/tag/ref is mutable and cannot be the immutable trust boundary
     # for a ship-gate answer. Accept both SHA-1 and SHA-256 full object IDs.
     if not isinstance(base, str) or not re.fullmatch(r"[0-9A-Fa-f]{40}(?:[0-9A-Fa-f]{24})?", base):
-        return _safe_gate_result({
+        return _mcp_gate_result({
             "blocked": True,
             "reasons": [
                 "BASE_REQUIRED: gate_check_paths requires an explicit immutable base "
@@ -31427,13 +31493,16 @@ def _mcp_tool_gate_check_paths(root: Path, arguments: dict) -> dict:
         try:
             head = _gate_run_git(root, "rev-parse", "HEAD").strip()
         except GateSpineError as e:
-            return _safe_gate_result({"blocked": True, "reasons": [str(e)], "changed_paths": paths})
+            return _mcp_gate_result({"blocked": True, "reasons": [str(e)], "changed_paths": paths})
 
     try:
-        result = _gate_run_ship_check(root, paths, verdict_dirs, [head], [base])
+        # Read-only: never runs receipt tooling, never signs, never writes the
+        # receipt chain (audit addendum units 4/42). Receipts are emitted by
+        # `tessctl gate pre-push` / `gate ci` only.
+        result = _gate_run_ship_check(root, paths, verdict_dirs, [head], [base], emit_receipts=False)
     except GateSpineError as e:
-        return _safe_gate_result({"blocked": True, "reasons": [str(e)], "changed_paths": paths})
-    return _safe_gate_result(result)
+        return _mcp_gate_result({"blocked": True, "reasons": [str(e)], "changed_paths": paths})
+    return _mcp_gate_result(result)
 
 
 def _mcp_tool_mission_status(root: Path, arguments: dict) -> dict:
@@ -31502,8 +31571,9 @@ MCP_TOOLS = {
                 "path": {
                     "type": "string",
                     "description": (
-                        "Path to the contract instance file (.json/.yaml/.yml/.md). Relative "
-                        "paths resolve against the tess project root."
+                        "Path to the contract instance file (.json/.yaml/.yml/.md), relative "
+                        "to the tess project root. Absolute paths and paths that resolve "
+                        "outside the root (including through links) are refused."
                     ),
                 },
                 "content": {"type": "string", "description": "Inline contract-instance content, instead of `path`."},
@@ -31523,7 +31593,8 @@ MCP_TOOLS = {
             "SAME decision engine `tessctl gate pre-push` / `tessctl gate ci` use "
             "(_gate_run_ship_check), so the result is identical to what a push of those paths "
             "at `head` against an immutable `base` commit would get. `base` is mandatory: "
-            "the tool refuses candidate-trust fallback. Moves gate enforcement IN-SESSION: "
+            "the tool refuses candidate-trust fallback. Read-only: it never emits, signs or "
+            "writes Agent Receipts. Moves gate enforcement IN-SESSION: "
             "check before you ever commit or push."
         ),
         "inputSchema": {
