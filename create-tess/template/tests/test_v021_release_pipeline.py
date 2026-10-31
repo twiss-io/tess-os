@@ -93,7 +93,9 @@ def test_ci_has_a_stock_macos_leg_and_a_tarball_e2e():
     jobs = load("ci.yml")["jobs"]
     mac = jobs["macos"]
     assert mac["runs-on"] == "macos-latest"
-    assert mac["strategy"]["matrix"]["python-version"] == ["3.9", "3.12"]
+    # The plan job picks the Pythons; with no plan output both run (fail closed).
+    py = mac["strategy"]["matrix"]["python-version"]
+    assert "needs.plan.outputs.macos_pythons" in py and "'[\"3.9\",\"3.12\"]'" in py
     mac_run = "\n".join(str(s.get("run", "")) + str(s.get("env", "")) for s in mac["steps"])
     assert "/usr/bin/python3" in mac_run and "python -m pytest" in mac_run and "npm test" in mac_run
     assert "TESS_E2E_TARBALL" in mac_run
@@ -220,7 +222,7 @@ def test_first_push_release_proof_runs_in_ci_and_release_not_skips():
     for job in ("test", "macos"):
         runs = [str(s.get("run", "")) for s in ci[job]]
         npm = next(i for i, r in enumerate(runs) if "npm ci --prefix create-tess" in r)
-        py = next(i for i, r in enumerate(runs) if "python -m pytest -rs" in r)
+        py = next(i for i, r in enumerate(runs) if re.search(r"python -m pytest -r\w*s\b", r))
         assert npm < py, job
         assert "SKIPPED.*" + FIRST_PUSH in runs[py] and "exit 1" in runs[py], job
         assert "set -euo pipefail" in runs[py], job

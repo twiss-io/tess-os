@@ -270,13 +270,27 @@ def test_anchor_accept_at_a_real_terminal_shows_the_diff_and_records(chain, real
         os.chdir(str(root))
         os.environ["TESS_ROOT"] = str(root)
         os.execv(sys.executable, [sys.executable, "-I", "-B", ".tess/bin/tessctl", "anchor", "accept"])
+    import select
+    import signal
+    import time
+
+    deadline = time.monotonic() + 120  # a hung terminal fails in minutes, not at the job timeout
+
+    def read_chunk():
+        left = deadline - time.monotonic()
+        if left <= 0 or not select.select([fd], [], [], left)[0]:
+            os.kill(pid, signal.SIGKILL)  # our own forked child, by PID
+            os.waitpid(pid, 0)
+            pytest.fail("anchor accept pty timed out; output so far: %r" % out[-500:])
+        return os.read(fd, 4096)
+
     out = b""
     while b"accept>" not in out:
-        out += os.read(fd, 4096)
+        out += read_chunk()
     os.write(fd, b"accept safety changes\n")
     while True:
         try:
-            chunk = os.read(fd, 4096)
+            chunk = read_chunk()
         except OSError:
             break
         if not chunk:
