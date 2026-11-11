@@ -862,35 +862,66 @@ def test_pr_owned_integration_pushes_still_diff_against_main(tmp_path, monkeypat
 
 # --- repeatable dev-dependency installs -------------------------------------------
 
+WORKFLOWS_WITH_DEV_INSTALLS = {"ci.yml": 5, "release.yml": 1}   # exact install counts
+CONSTRAINTS = ".github/ci-constraints.txt"
+
+
+def _steps(wf_name):
+    wf = yaml.safe_load((REPO / ".github" / "workflows" / wf_name).read_text(encoding="utf-8"))
+    return [s for job in wf["jobs"].values() for s in job.get("steps", [])]
+
+
 def test_every_workflow_dev_install_uses_the_ci_constraints_file():
     import re
-    seen = 0
-    for wf in ("ci.yml", "release.yml"):
-        text = (REPO / ".github" / "workflows" / wf).read_text()
-        for line in text.splitlines():
-            if "pip" in line and "install" in line and "requirements-dev.txt" in line:
-                seen += 1
-                assert "-c .github/ci-constraints.txt" in line, (wf, line.strip())
-    assert seen >= 5   # four in ci.yml (one in the Apple-python venv) and one in release.yml
-    # setup-python's pip cache is keyed on both files, so a pin bump busts it
-    for wf in ("ci.yml", "release.yml"):
-        for block in re.findall(r"cache-dependency-path: \|\n((?:\s+\S.*\n)+)", (REPO / ".github" / "workflows" / wf).read_text()):
-            if "requirements-dev.txt" in block:
-                assert ".github/ci-constraints.txt" in block, wf
+    for wf_name, expected in WORKFLOWS_WITH_DEV_INSTALLS.items():
+        installs = []
+        cache_steps = 0
+        for step in _steps(wf_name):
+            # join shell line continuations so a wrapped command is one command
+            run = (step.get("run") or "").replace("\\\n", " ")
+            installs += re.findall(r"pip3? install\b[^\n]*requirements-dev\.txt[^\n]*", run)
+            cache = (step.get("with") or {}).get("cache-dependency-path")
+            if cache and "requirements-dev.txt" in cache:
+                cache_steps += 1
+                # setup-python's pip cache is keyed on both files, so a pin bump busts it
+                assert sorted(cache.split()) == sorted(["requirements-dev.txt", CONSTRAINTS]), (wf_name, cache)
+        assert len(installs) == expected, (wf_name, installs)
+        for cmd in installs:
+            assert f"-c {CONSTRAINTS}" in cmd, (wf_name, cmd)
+        assert cache_steps >= 1, wf_name
 
 
-def test_the_ci_constraints_pin_every_dev_requirement_exactly():
+# Every package pip installs from requirements-dev.txt, per Python that CI runs, with
+# dependencies of dependencies. When a pin is bumped or a dependency appears, update
+# this table and ci-constraints.txt together; the test fails if they disagree.
+EXPECTED_PINNED = {
+    "3.9": {"pytest", "pytest-xdist", "pyyaml", "pyrage", "execnet", "iniconfig", "packaging",
+            "pluggy", "pygments", "exceptiongroup", "tomli", "typing-extensions"},
+    "3.12": {"pytest", "pytest-xdist", "pyyaml", "pyrage", "execnet", "iniconfig", "packaging",
+             "pluggy", "pygments"},
+}
+
+
+def test_the_ci_constraints_pin_every_dev_requirement_exactly_for_each_python():
     import re
-    pins = {}
-    for line in (REPO / ".github" / "ci-constraints.txt").read_text().splitlines():
+    from packaging.markers import Marker
+    entries = []
+    for line in (REPO / CONSTRAINTS).read_text().splitlines():
         line = line.split("#")[0].strip()
         if not line:
             continue
-        m = re.fullmatch(r"([A-Za-z0-9_.-]+)==([0-9][^;\s]*)(\s*;.*)?", line)
+        m = re.fullmatch(r"([A-Za-z0-9_.-]+)==([0-9][^;\s]*)\s*(?:;\s*(.*))?", line)
         assert m, f"not an exact pin: {line!r}"
-        pins.setdefault(m[1].lower().replace("_", "-"), []).append(m[3])
+        entries.append((re.sub(r"[-_.]+", "-", m[1]).lower(), m[2], m[3]))
+    direct = set()
     for line in (REPO / "requirements-dev.txt").read_text().splitlines():
         line = line.split("#")[0].strip()
         if line:
-            name = re.split(r"[<>=!~\[; ]", line, maxsplit=1)[0].lower().replace("_", "-")
-            assert name in pins, f"{name} is in requirements-dev.txt but not pinned in ci-constraints.txt"
+            direct.add(re.sub(r"[-_.]+", "-", re.split(r"[<>=!~\[; ]", line, maxsplit=1)[0]).lower())
+    for py, expected in EXPECTED_PINNED.items():
+        env = {"python_version": py, "python_full_version": py + ".0"}
+        names = [n for n, _v, marker in entries if marker is None or Marker(marker).evaluate(env)]
+        assert len(names) == len(set(names)), f"python {py}: a package is pinned twice: {sorted(names)}"
+        assert set(names) == expected, (
+            f"python {py}: missing pins {sorted(expected - set(names))}, unexpected pins {sorted(set(names) - expected)}")
+        assert direct <= set(names), (py, sorted(direct - set(names)))
