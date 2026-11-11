@@ -618,7 +618,7 @@ def _lookup(monkeypatch, payload=None, exc=None, token="t", repo="o/r", branch="
 
 @pytest.mark.parametrize("exc", [
     TimeoutError("timed out"), OSError("network down"), __import__("urllib.error").error.URLError("dns"),
-    __import__("urllib.error").error.HTTPError("u", 403, "rate limited", {}, None), RuntimeError("boom"),
+    __import__("urllib.error").error.HTTPError("u", 403, "rate limited", {}, __import__("io").BytesIO(b"")), RuntimeError("boom"),
 ])
 def test_pr_lookup_errors_return_none(monkeypatch, exc):
     assert _lookup(monkeypatch, exc=exc) is None
