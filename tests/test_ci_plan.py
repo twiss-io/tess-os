@@ -326,12 +326,15 @@ def test_pr_groups_include_the_pr_number_cancel_and_never_collide():
     assert _cancels("pull_request", "refs/pull/7/merge", 1, 7) is True
 
 
-def test_feature_branch_push_groups_are_per_ref_and_cancel():
-    a, a2 = _group("push", "refs/heads/feat/a", 1), _group("push", "refs/heads/feat/a", 2)
-    b = _group("push", "refs/heads/feat/b", 3)
-    assert a == a2 and a != b
-    assert _cancels("push", "refs/heads/feat/a", 1) is True
-    assert _group("push", "refs/heads/feat/a", 1) != _group("pull_request", "refs/pull/7/merge", 1, 7)
+def test_push_triggers_only_main_release_and_rc_so_a_commit_is_not_run_twice():
+    on = _wf()[True] if True in _wf() else _wf()["on"]
+    assert on["push"] == {"branches": ["main", "rc/**", "release/**"]}
+    assert "pull_request" in on and "workflow_dispatch" in on
+    # a PR run is the only run that cancels; everything else gets its own group
+    assert _cancels("pull_request", "refs/pull/7/merge", 1, 7) is True
+    for event, ref in (("push", "refs/heads/main"), ("workflow_dispatch", "refs/heads/feat/a")):
+        assert _cancels(event, ref, 1) is False
+        assert _group(event, ref, 1) != _group("pull_request", "refs/pull/7/merge", 1, 7)
 
 
 def test_plan_job_gets_only_read_permissions():

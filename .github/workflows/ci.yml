@@ -1,8 +1,13 @@
 name: CI
 
 on:
+  # Pushes run only on the branches that get the full run: main, release/** and
+  # rc/**. Any other branch is validated by its pull request (the pull_request
+  # trigger below), so one commit is not run twice, once per event. A branch with
+  # no pull request does not run automatically: start it by hand with
+  # workflow_dispatch (Actions tab, or `gh workflow run ci.yml --ref <branch>`).
   push:
-    branches: ['**']
+    branches: ['main', 'rc/**', 'release/**']
   pull_request:
   # Manual full run. `macos: false` limits it to the Linux jobs.
   workflow_dispatch:
@@ -13,22 +18,18 @@ on:
         default: true
 
 # PR runs: one group per workflow + PR number, superseded runs cancel, and one
-# PR never cancels another. Feature-branch pushes: one group per workflow + ref,
-# superseded runs cancel. Runs on main, release/** and rc/** pushes, and every
-# manual dispatch get a group unique to the run (run_id), so they never cancel
-# or queue behind each other (a shared group would keep only one pending run and
-# silently drop the middle one when merges land quickly). This workflow only
-# validates; the signing, release and publish workflows have their own
-# concurrency rules and are untouched.
+# PR never cancels another. Every other run (pushes to main, release/** and rc/**,
+# and every manual dispatch) gets a group unique to the run (run_id), so they
+# never cancel or queue behind each other (a shared group would keep only one
+# pending run and silently drop the middle one when merges land quickly). This
+# workflow only validates; the signing, release and publish workflows have their
+# own concurrency rules and are untouched.
 concurrency:
   group: >-
     ${{ github.workflow }}-${{
       github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number)
-      || (github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
-          || startsWith(github.ref, 'refs/heads/release/') || startsWith(github.ref, 'refs/heads/rc/'))
-         && format('run-{0}', github.run_id)
-      || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/heads/release/') && !startsWith(github.ref, 'refs/heads/rc/')) }}
+      || format('run-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
