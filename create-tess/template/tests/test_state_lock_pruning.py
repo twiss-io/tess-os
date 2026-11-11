@@ -125,13 +125,21 @@ def test_prune_inode_mismatch_skips_deletion(monkeypatch, engine, sroot):
 
     real_fstat = os.fstat
 
+    # os.fstat is patched process-wide, and the patch is still active while
+    # pytest itself reads its capture files after the test body (pytest 9.2
+    # calls os.fstat(...).st_size there). So the fake must behave like the real
+    # stat result in every field except the one under test, st_ino.
     class _FakeStat:
-        def __init__(self, st_ino):
+        def __init__(self, real, st_ino):
+            self._real = real
             self.st_ino = st_ino
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
 
     def fake_fstat(fd):
         real = real_fstat(fd)
-        return _FakeStat(real.st_ino + 999_999)  # deliberately wrong
+        return _FakeStat(real, real.st_ino + 999_999)  # deliberately wrong
 
     monkeypatch.setattr(os, "fstat", fake_fstat)
 
