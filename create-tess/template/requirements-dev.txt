@@ -2,7 +2,9 @@
 # Runtime engine needs only pyyaml; the test suite adds pytest.
 # pyrage is required for the M5 vault test suite (test_m5_vault.py).
 # Without it, all 48 vault tests skip — the CI vault coverage gate fails.
-pytest>=7.0
+# Capped 2026-11-12: two tests break under pytest 9.2 (test_mock_target_disabled_is_not_rerendered_by_cmd_update,
+# test_prune_inode_mismatch_skips_deletion). Remove the cap when they are fixed.
+pytest>=7.0,<9.2
 # E8: CI also runs the gate test files under pytest-xdist (.github/workflows/ci.yml).
 pytest-xdist>=3.5
 PyYAML>=6.0
