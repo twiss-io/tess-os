@@ -84,7 +84,12 @@ class _MockHarnessTarget:
 def _make_mock_target(engine):
     """Build a MockHarnessTarget that is a genuine engine.RenderTarget
     subclass (proves the base-class contract, not a duck-typed stand-in)."""
-    cls = type("MockHarnessTarget", (engine.RenderTarget,), dict(_MockHarnessTarget.__dict__))
+    # Copy the methods and attributes, but not the __dict__/__weakref__ slot
+    # descriptors that belong to _MockHarnessTarget: carried onto a different
+    # class they raise TypeError as soon as anything reads the instance's
+    # __dict__ (pytest 9.2's monkeypatch.setattr does).
+    body = {k: v for k, v in _MockHarnessTarget.__dict__.items() if k not in ("__dict__", "__weakref__")}
+    cls = type("MockHarnessTarget", (engine.RenderTarget,), body)
     cls._engine = engine
     return cls()
 
