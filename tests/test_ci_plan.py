@@ -355,6 +355,7 @@ GATE_PATH_EXAMPLES = [
     "tessctl",
     "core/policy/policy.yaml",
     "requirements-dev.txt",
+    ".github/ci-constraints.txt",
     "uv.lock",
     "pyproject.toml",
     "create-tess/package-lock.json",
@@ -854,3 +855,39 @@ def test_pr_owned_integration_pushes_still_diff_against_main(tmp_path, monkeypat
     r, main, rc = _clone_with_lines(tmp_path)
     monkeypatch.setattr(plan, "open_pr_to_default_branch", lambda *a, **k: True)
     assert _plan_push(r, rc, monkeypatch, tmp_path, ref="rc/v1")["macos"] == "true"
+
+
+# --- repeatable dev-dependency installs -------------------------------------------
+
+def test_every_workflow_dev_install_uses_the_ci_constraints_file():
+    import re
+    seen = 0
+    for wf in ("ci.yml", "release.yml"):
+        text = (REPO / ".github" / "workflows" / wf).read_text()
+        for line in text.splitlines():
+            if "pip" in line and "install" in line and "requirements-dev.txt" in line:
+                seen += 1
+                assert "-c .github/ci-constraints.txt" in line, (wf, line.strip())
+    assert seen >= 5   # four in ci.yml (one in the Apple-python venv) and one in release.yml
+    # setup-python's pip cache is keyed on both files, so a pin bump busts it
+    for wf in ("ci.yml", "release.yml"):
+        for block in re.findall(r"cache-dependency-path: \|\n((?:\s+\S.*\n)+)", (REPO / ".github" / "workflows" / wf).read_text()):
+            if "requirements-dev.txt" in block:
+                assert ".github/ci-constraints.txt" in block, wf
+
+
+def test_the_ci_constraints_pin_every_dev_requirement_exactly():
+    import re
+    pins = {}
+    for line in (REPO / ".github" / "ci-constraints.txt").read_text().splitlines():
+        line = line.split("#")[0].strip()
+        if not line:
+            continue
+        m = re.fullmatch(r"([A-Za-z0-9_.-]+)==([0-9][^;\s]*)(\s*;.*)?", line)
+        assert m, f"not an exact pin: {line!r}"
+        pins.setdefault(m[1].lower().replace("_", "-"), []).append(m[3])
+    for line in (REPO / "requirements-dev.txt").read_text().splitlines():
+        line = line.split("#")[0].strip()
+        if line:
+            name = re.split(r"[<>=!~\[; ]", line, maxsplit=1)[0].lower().replace("_", "-")
+            assert name in pins, f"{name} is in requirements-dev.txt but not pinned in ci-constraints.txt"

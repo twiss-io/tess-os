@@ -1,0 +1,33 @@
+# CI-only pins for the dev dependencies in requirements-dev.txt and everything
+# they pull in. Used as `pip install -r requirements-dev.txt -c .github/ci-constraints.txt`
+# by the CI and release workflows, so a new release of a dev dependency cannot
+# change a run on its own. requirements-dev.txt stays unpinned: it is what
+# contributors and the create-tess template install.
+#
+# A constraints file only limits versions; it never adds packages. Two sets
+# because pytest 9 needs Python 3.10 or newer: CI runs 3.9 and 3.12.
+#
+# To bump: install the new versions in a clean venv on both Pythons, run the
+# full suite, then update the versions here in the same pull request.
+
+# Both Pythons
+pytest-xdist==3.8.0
+execnet==2.1.2
+PyYAML==6.0.3
+packaging==26.3
+Pygments==2.21.0
+
+# Python 3.10 and newer
+pytest==9.2.0; python_version >= "3.10"
+pluggy==1.7.0; python_version >= "3.10"
+iniconfig==2.3.1; python_version >= "3.10"
+pyrage==1.4.0; python_version >= "3.10"
+
+# Python 3.9
+pytest==8.4.2; python_version < "3.10"
+pluggy==1.6.0; python_version < "3.10"
+iniconfig==2.1.0; python_version < "3.10"
+pyrage==1.3.0; python_version < "3.10"
+exceptiongroup==1.3.1; python_version < "3.10"
+tomli==2.5.0; python_version < "3.10"
+typing_extensions==4.16.0; python_version < "3.10"

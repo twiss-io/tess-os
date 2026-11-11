@@ -109,12 +109,14 @@ jobs:
         with:
           python-version: '3.12'
           cache: pip
-          cache-dependency-path: requirements-dev.txt
+          cache-dependency-path: |
+            requirements-dev.txt
+            .github/ci-constraints.txt
 
       - name: Install dev dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements-dev.txt
+          pip install -r requirements-dev.txt -c .github/ci-constraints.txt
 
       # Gate 2 — the full test suite must pass, and the first-push release
       # proof (tests/test_v1_first_push_release_proof.py) must RUN: it skips
