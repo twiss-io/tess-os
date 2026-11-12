@@ -150,6 +150,9 @@ export const EXCLUDE_REL_PATHS = new Set([
   '.github/scripts/release_version_gate.py',
   '.github/scripts/verify_release_tag.sh',
   '.github/scripts/verify_release_ssh_sig.sh',
+  // Tess OS's own CI planner (decides which CI legs run in this repo).
+  '.github/scripts/ci_plan.py',
+  'tests/test_ci_plan.py',
   // Maintainer-only: signs tess-os release tags with the Twiss release key.
   'scripts/release/sign-release-tag.sh',
   // Maintainer-only: names the tess-os maintainers as required reviewers.

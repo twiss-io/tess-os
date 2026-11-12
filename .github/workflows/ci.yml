@@ -4,19 +4,82 @@ on:
   push:
     branches: ['**']
   pull_request:
+  # Manual full run. `macos: false` limits it to the Linux jobs.
+  workflow_dispatch:
+    inputs:
+      macos:
+        description: "Run the macOS legs too"
+        type: boolean
+        default: true
 
-# Cancel superseded runs for the same ref to save CI minutes.
+# PR runs: one group per workflow + PR number, superseded runs cancel, and one
+# PR never cancels another. Feature-branch pushes: one group per workflow + ref,
+# superseded runs cancel. Runs on main, release/** and rc/** pushes, and every
+# manual dispatch get a group unique to the run (run_id), so they never cancel
+# or queue behind each other (a shared group would keep only one pending run and
+# silently drop the middle one when merges land quickly). This workflow only
+# validates; the signing, release and publish workflows have their own
+# concurrency rules and are untouched.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: >-
+    ${{ github.workflow }}-${{
+      github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number)
+      || (github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
+          || startsWith(github.ref, 'refs/heads/release/') || startsWith(github.ref, 'refs/heads/rc/'))
+         && format('run-{0}', github.run_id)
+      || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/heads/release/') && !startsWith(github.ref, 'refs/heads/rc/')) }}
 
 permissions:
   contents: read
 
 jobs:
+  # Decides only whether the macOS legs run (they are about 85% of CI's gross
+  # runner cost and none is a required check) and whether the macOS py3.12 pytest
+  # leg joins the py3.9 leg. Every Linux job below, including every required
+  # status check, runs on every event and does not depend on this job. If this job
+  # fails or is skipped the macOS legs run, both Pythons (fail closed).
+  # Rules and the change-to-check table: .github/scripts/ci_plan.py and
+  # tests/test_ci_plan.py.
+  plan:
+    name: plan (macOS legs)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      macos: ${{ steps.plan.outputs.macos }}
+      macos_pythons: ${{ steps.plan.outputs.macos_pythons }}
+      conformance_os: ${{ steps.plan.outputs.conformance_os }}
+    steps:
+      - name: Checkout (full history and all branch refs, for the cumulative diff and the nearest-base lookup)
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Decide
+        id: plan
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          BASE_REF: ${{ github.base_ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          PUSH_SHA: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+          DISPATCH_MACOS: ${{ inputs.macos }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 -I -B .github/scripts/ci_plan.py
+
   test:
     name: tests (py${{ matrix.python-version }})
-    runs-on: ubuntu-latest
+    # setup-python has no Python 3.9 build for Ubuntu 26.04 (what ubuntu-latest
+    # now resolves to), so the 3.9 leg stays on 24.04, which has one.
+    runs-on: ${{ matrix.python-version == '3.9' && 'ubuntu-24.04' || 'ubuntu-latest' }}
+    timeout-minutes: 200
     strategy:
       fail-fast: false
       matrix:
@@ -83,7 +146,7 @@ jobs:
           TESS_RECORD_GATE_CORPUS: ${{ matrix.python-version == '3.12' && format('{0}/gate-corpus.jsonl', runner.temp) || '' }}
         run: |
           set -euo pipefail
-          python -m pytest -rs -p gate_corpus_recorder | tee "$RUNNER_TEMP/pytest.log"
+          python -m pytest -rs --durations=25 -p gate_corpus_recorder | tee "$RUNNER_TEMP/pytest.log"
           if grep -E "SKIPPED.*test_v1_first_push_release_proof" "$RUNNER_TEMP/pytest.log"; then
             echo "::error::tests/test_v1_first_push_release_proof.py was skipped; it must run in CI"
             exit 1
@@ -146,12 +209,17 @@ jobs:
   # turns every "cannot run here" skip into a failure.
   shell-conformance:
     name: shell conformance (${{ matrix.os }})
-    needs: test
+    needs: [test, plan]
+    # Same condition as before (the test job must pass) without being skipped by
+    # a failed plan job. The macOS leg is dropped only when the plan says so;
+    # a missing plan output runs both legs.
+    if: ${{ !cancelled() && needs.test.result == 'success' }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: ${{ fromJSON(needs.plan.outputs.conformance_os || '["ubuntu-latest","macos-latest"]') }}
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -201,6 +269,7 @@ jobs:
   create-tess:
     name: create-tess tests (node ${{ matrix.node-version }}${{ matrix.npm-version && format(', npm {0}', matrix.npm-version) || '' }})
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     defaults:
       run:
         working-directory: create-tess
@@ -240,16 +309,28 @@ jobs:
         run: npm test
 
   # A stock Mac: /usr/bin/python3 is Apple's 3.9 with no PyYAML. pytest runs
-  # on a setup-python interpreter (3.9 and 3.12); the packed-tarball scaffold
-  # test and the fresh-install e2e run the wizard with /usr/bin/python3 first
-  # on PATH, so tessctl and onboarding must work without any pip install.
+  # on a setup-python interpreter; the packed-tarball scaffold test and the
+  # fresh-install e2e run the wizard with /usr/bin/python3 first on PATH, so
+  # tessctl and onboarding must work without any pip install.
+  #
+  # The py3.9 leg is the macOS leg that matters: it runs the stock-Python steps
+  # (they ignore the matrix Python, so the py3.12 leg ran them a second time for
+  # nothing) and the gate tests under Apple's own /usr/bin/python3 3.9.6, the
+  # interpreter a stock Mac's hooks run. The py3.12 leg adds only pytest and runs
+  # only when the plan asks for it (PR to main, push to main, manual dispatch).
   macos:
-    name: macOS (py${{ matrix.python-version }}, stock /usr/bin/python3 install)
+    name: macOS (py${{ matrix.python-version }}${{ matrix.python-version == '3.9' && ', stock /usr/bin/python3 install' || '' }})
+    needs: plan
+    # Runs unless the plan job succeeded and said no (macos == 'false'). A failed or
+    # skipped plan job, or a missing output, therefore runs the macOS legs (fail closed).
+    if: ${{ !cancelled() && (needs.plan.result != 'success' || needs.plan.outputs.macos != 'false') }}
     runs-on: macos-latest
+    timeout-minutes: 240
     strategy:
       fail-fast: false
       matrix:
-        python-version: ['3.9', '3.12']
+        # A missing plan output runs both legs (fail closed).
+        python-version: ${{ fromJSON(needs.plan.outputs.macos_pythons || '["3.9","3.12"]') }}
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -272,6 +353,7 @@ jobs:
           pip install -r requirements-dev.txt
 
       - name: Stock /usr/bin/python3 really lacks PyYAML
+        if: matrix.python-version == '3.9'
         run: |
           /usr/bin/python3 --version
           if /usr/bin/python3 -c 'import yaml' 2>/dev/null; then
@@ -286,16 +368,43 @@ jobs:
       - name: Install create-tess dependencies (first-push release proof needs them)
         run: npm ci --prefix create-tess
 
-      - name: Run test suite (pytest)
+      # macOS arm64 runners have 3 vCPUs. `-n 3` (pytest-xdist, in requirements-dev.txt)
+      # should cut this step from about 104 minutes to an estimated 40-50. The full
+      # suite has passed under -n 4 and -n 8 since the E8 isolation fix, and the Linux
+      # E8 step runs the gate files under xdist on every push. A test that cannot share
+      # a worker should be serialised with an explicit marker, not drop -n.
+      - name: Run test suite (pytest, -n 3)
         run: |
           set -euo pipefail
-          python -m pytest -rs | tee "$RUNNER_TEMP/pytest.log"
+          python -m pytest -rfEs -n 3 | tee "$RUNNER_TEMP/pytest.log"
           if grep -E "SKIPPED.*test_v1_first_push_release_proof" "$RUNNER_TEMP/pytest.log"; then
             echo "::error::tests/test_v1_first_push_release_proof.py was skipped; it must run in CI"
             exit 1
           fi
 
+      # Gate-focused tests under Apple's own /usr/bin/python3 (3.9.6). The only
+      # Linux-invisible product bug so far (a gate bypass, fixed in 496f319) showed
+      # up on a patch release of 3.9 that setup-python does not install: stock-Mac
+      # users' hooks run under /usr/bin/python3. pytest is installed into a throwaway
+      # venv made from that interpreter, so /usr/bin/python3 itself stays stock.
+      # Keep this list small; it must equal APPLE_GATE_TESTS in ci_plan.py (tests/test_ci_plan.py checks).
+      - name: Gate tests under Apple's /usr/bin/python3
+        if: matrix.python-version == '3.9'
+        timeout-minutes: 25
+        run: |
+          set -euo pipefail
+          /usr/bin/python3 --version
+          # The step promises Apple's 3.9: fail rather than quietly test another interpreter.
+          /usr/bin/python3 -c 'import sys; sys.exit(0 if sys.version_info[:2] == (3, 9) else 1)' \
+            || { echo "::error::/usr/bin/python3 is not Apple's 3.9 on this runner image"; exit 1; }
+          /usr/bin/python3 -m venv "$RUNNER_TEMP/apple-py"
+          "$RUNNER_TEMP/apple-py/bin/python" -m pip install --quiet --disable-pip-version-check -r requirements-dev.txt
+          "$RUNNER_TEMP/apple-py/bin/python" -I -B -m pytest -q -rfEs -p no:cacheprovider -n 3 \
+            tests/test_v1_b1_class.py tests/test_v1_round4_shell_model.py tests/test_v1_r6_gate_expand.py \
+            tests/test_hook_pinning.py tests/test_e8_fail_closed.py tests/test_v1_r2_isolation.py
+
       - name: create-tess tests, wizard on stock /usr/bin/python3
+        if: matrix.python-version == '3.9'
         working-directory: create-tess
         env:
           TESS_TEST_PYTHON: /usr/bin/python3
@@ -304,6 +413,7 @@ jobs:
           npm test
 
       - name: Fresh-install e2e from the packed tarball, stock /usr/bin/python3
+        if: matrix.python-version == '3.9'
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/pack"
@@ -316,6 +426,7 @@ jobs:
   fresh-install-e2e:
     name: fresh-install e2e (packed tarball)
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -349,6 +460,7 @@ jobs:
   secret-scan:
     name: secret scan (gitleaks)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
     steps:
