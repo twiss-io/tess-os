@@ -326,12 +326,15 @@ def test_pr_groups_include_the_pr_number_cancel_and_never_collide():
     assert _cancels("pull_request", "refs/pull/7/merge", 1, 7) is True
 
 
-def test_feature_branch_push_groups_are_per_ref_and_cancel():
-    a, a2 = _group("push", "refs/heads/feat/a", 1), _group("push", "refs/heads/feat/a", 2)
-    b = _group("push", "refs/heads/feat/b", 3)
-    assert a == a2 and a != b
-    assert _cancels("push", "refs/heads/feat/a", 1) is True
-    assert _group("push", "refs/heads/feat/a", 1) != _group("pull_request", "refs/pull/7/merge", 1, 7)
+def test_push_triggers_only_main_release_and_rc_so_a_commit_is_not_run_twice():
+    on = _wf()[True] if True in _wf() else _wf()["on"]
+    assert on["push"] == {"branches": ["main", "rc/**", "release/**"]}
+    assert "pull_request" in on and "workflow_dispatch" in on
+    # a PR run is the only run that cancels; everything else gets its own group
+    assert _cancels("pull_request", "refs/pull/7/merge", 1, 7) is True
+    for event, ref in (("push", "refs/heads/main"), ("workflow_dispatch", "refs/heads/feat/a")):
+        assert _cancels(event, ref, 1) is False
+        assert _group(event, ref, 1) != _group("pull_request", "refs/pull/7/merge", 1, 7)
 
 
 def test_plan_job_gets_only_read_permissions():
@@ -355,6 +358,7 @@ GATE_PATH_EXAMPLES = [
     "tessctl",
     "core/policy/policy.yaml",
     "requirements-dev.txt",
+    ".github/ci-constraints.txt",
     "uv.lock",
     "pyproject.toml",
     "create-tess/package-lock.json",
@@ -854,3 +858,70 @@ def test_pr_owned_integration_pushes_still_diff_against_main(tmp_path, monkeypat
     r, main, rc = _clone_with_lines(tmp_path)
     monkeypatch.setattr(plan, "open_pr_to_default_branch", lambda *a, **k: True)
     assert _plan_push(r, rc, monkeypatch, tmp_path, ref="rc/v1")["macos"] == "true"
+
+
+# --- repeatable dev-dependency installs -------------------------------------------
+
+WORKFLOWS_WITH_DEV_INSTALLS = {"ci.yml": 5, "release.yml": 1}   # exact install counts
+CONSTRAINTS = ".github/ci-constraints.txt"
+
+
+def _steps(wf_name):
+    wf = yaml.safe_load((REPO / ".github" / "workflows" / wf_name).read_text(encoding="utf-8"))
+    return [s for job in wf["jobs"].values() for s in job.get("steps", [])]
+
+
+def test_every_workflow_dev_install_uses_the_ci_constraints_file():
+    import re
+    for wf_name, expected in WORKFLOWS_WITH_DEV_INSTALLS.items():
+        installs = []
+        cache_steps = 0
+        for step in _steps(wf_name):
+            # join shell line continuations so a wrapped command is one command
+            run = (step.get("run") or "").replace("\\\n", " ")
+            installs += re.findall(r"pip3? install\b[^\n]*requirements-dev\.txt[^\n]*", run)
+            cache = (step.get("with") or {}).get("cache-dependency-path")
+            if cache and "requirements-dev.txt" in cache:
+                cache_steps += 1
+                # setup-python's pip cache is keyed on both files, so a pin bump busts it
+                assert sorted(cache.split()) == sorted(["requirements-dev.txt", CONSTRAINTS]), (wf_name, cache)
+        assert len(installs) == expected, (wf_name, installs)
+        for cmd in installs:
+            assert f"-c {CONSTRAINTS}" in cmd, (wf_name, cmd)
+        assert cache_steps >= 1, wf_name
+
+
+# Every package pip installs from requirements-dev.txt, per Python that CI runs, with
+# dependencies of dependencies. When a pin is bumped or a dependency appears, update
+# this table and ci-constraints.txt together; the test fails if they disagree.
+EXPECTED_PINNED = {
+    "3.9": {"pytest", "pytest-xdist", "pyyaml", "pyrage", "execnet", "iniconfig", "packaging",
+            "pluggy", "pygments", "exceptiongroup", "tomli", "typing-extensions"},
+    "3.12": {"pytest", "pytest-xdist", "pyyaml", "pyrage", "execnet", "iniconfig", "packaging",
+             "pluggy", "pygments"},
+}
+
+
+def test_the_ci_constraints_pin_every_dev_requirement_exactly_for_each_python():
+    import re
+    from packaging.markers import Marker
+    entries = []
+    for line in (REPO / CONSTRAINTS).read_text().splitlines():
+        line = line.split("#")[0].strip()
+        if not line:
+            continue
+        m = re.fullmatch(r"([A-Za-z0-9_.-]+)==([0-9][^;\s]*)\s*(?:;\s*(.*))?", line)
+        assert m, f"not an exact pin: {line!r}"
+        entries.append((re.sub(r"[-_.]+", "-", m[1]).lower(), m[2], m[3]))
+    direct = set()
+    for line in (REPO / "requirements-dev.txt").read_text().splitlines():
+        line = line.split("#")[0].strip()
+        if line:
+            direct.add(re.sub(r"[-_.]+", "-", re.split(r"[<>=!~\[; ]", line, maxsplit=1)[0]).lower())
+    for py, expected in EXPECTED_PINNED.items():
+        env = {"python_version": py, "python_full_version": py + ".0"}
+        names = [n for n, _v, marker in entries if marker is None or Marker(marker).evaluate(env)]
+        assert len(names) == len(set(names)), f"python {py}: a package is pinned twice: {sorted(names)}"
+        assert set(names) == expected, (
+            f"python {py}: missing pins {sorted(expected - set(names))}, unexpected pins {sorted(set(names) - expected)}")
+        assert direct <= set(names), (py, sorted(direct - set(names)))

@@ -81,7 +81,7 @@ _GATE_REGEXES = (
     r"core/contracts/.+",                      # schemas the gate and engine validate against
     r"scripts/brain/.+",                       # pinned hook closure, run via run-pinned.py
     r"tess\.manifest\.json",
-    r"(requirements-dev\.txt|uv\.lock|pyproject\.toml|\.python-version|pytest\.ini)",
+    r"(requirements-dev\.txt|\.github/ci-constraints\.txt|uv\.lock|pyproject\.toml|\.python-version|pytest\.ini)",
     r"create-tess/package(-lock)?\.json",
     r"tests/(shell_conformance|gate_corpus_recorder|conftest)\.py",
     r"tests/test_v1_shell_conformance\.py",

@@ -1,8 +1,13 @@
 name: CI
 
 on:
+  # Pushes run only on the branches that get the full run: main, release/** and
+  # rc/**. Any other branch is validated by its pull request (the pull_request
+  # trigger below), so one commit is not run twice, once per event. A branch with
+  # no pull request does not run automatically: start it by hand with
+  # workflow_dispatch (Actions tab, or `gh workflow run ci.yml --ref <branch>`).
   push:
-    branches: ['**']
+    branches: ['main', 'rc/**', 'release/**']
   pull_request:
   # Manual full run. `macos: false` limits it to the Linux jobs.
   workflow_dispatch:
@@ -13,22 +18,18 @@ on:
         default: true
 
 # PR runs: one group per workflow + PR number, superseded runs cancel, and one
-# PR never cancels another. Feature-branch pushes: one group per workflow + ref,
-# superseded runs cancel. Runs on main, release/** and rc/** pushes, and every
-# manual dispatch get a group unique to the run (run_id), so they never cancel
-# or queue behind each other (a shared group would keep only one pending run and
-# silently drop the middle one when merges land quickly). This workflow only
-# validates; the signing, release and publish workflows have their own
-# concurrency rules and are untouched.
+# PR never cancels another. Every other run (pushes to main, release/** and rc/**,
+# and every manual dispatch) gets a group unique to the run (run_id), so they
+# never cancel or queue behind each other (a shared group would keep only one
+# pending run and silently drop the middle one when merges land quickly). This
+# workflow only validates; the signing, release and publish workflows have their
+# own concurrency rules and are untouched.
 concurrency:
   group: >-
     ${{ github.workflow }}-${{
       github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number)
-      || (github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
-          || startsWith(github.ref, 'refs/heads/release/') || startsWith(github.ref, 'refs/heads/rc/'))
-         && format('run-{0}', github.run_id)
-      || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/heads/release/') && !startsWith(github.ref, 'refs/heads/rc/')) }}
+      || format('run-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -93,7 +94,9 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
-          cache-dependency-path: requirements-dev.txt
+          cache-dependency-path: |
+            requirements-dev.txt
+            .github/ci-constraints.txt
 
       # DoD B.9 wedge-loop e2e (tests/orchestrator/test_e2e_wedge_loop.py)
       # HARD-REQUIRES a real `node` binary and deliberately does not
@@ -130,7 +133,7 @@ jobs:
       - name: Install dev dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements-dev.txt
+          pip install -r requirements-dev.txt -c .github/ci-constraints.txt
 
       # tests/test_v1_first_push_release_proof.py builds the real npm tarball and
       # SKIPS unless create-tess/node_modules exists. Install it before pytest,
@@ -229,12 +232,14 @@ jobs:
         with:
           python-version: '3.12'
           cache: pip
-          cache-dependency-path: requirements-dev.txt
+          cache-dependency-path: |
+            requirements-dev.txt
+            .github/ci-constraints.txt
 
       - name: Install dev dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements-dev.txt
+          pip install -r requirements-dev.txt -c .github/ci-constraints.txt
 
       # Ubuntu 24.04 restricts unprivileged user namespaces through AppArmor;
       # bwrap needs one. The runner is disposable, so the restriction is lifted.
@@ -340,7 +345,9 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
-          cache-dependency-path: requirements-dev.txt
+          cache-dependency-path: |
+            requirements-dev.txt
+            .github/ci-constraints.txt
 
       - name: Set up Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -350,7 +357,7 @@ jobs:
       - name: Install dev dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements-dev.txt
+          pip install -r requirements-dev.txt -c .github/ci-constraints.txt
 
       - name: Stock /usr/bin/python3 really lacks PyYAML
         if: matrix.python-version == '3.9'
@@ -398,7 +405,7 @@ jobs:
           /usr/bin/python3 -c 'import sys; sys.exit(0 if sys.version_info[:2] == (3, 9) else 1)' \
             || { echo "::error::/usr/bin/python3 is not Apple's 3.9 on this runner image"; exit 1; }
           /usr/bin/python3 -m venv "$RUNNER_TEMP/apple-py"
-          "$RUNNER_TEMP/apple-py/bin/python" -m pip install --quiet --disable-pip-version-check -r requirements-dev.txt
+          "$RUNNER_TEMP/apple-py/bin/python" -m pip install --quiet --disable-pip-version-check -r requirements-dev.txt -c .github/ci-constraints.txt
           "$RUNNER_TEMP/apple-py/bin/python" -I -B -m pytest -q -rfEs -p no:cacheprovider -n 3 \
             tests/test_v1_b1_class.py tests/test_v1_round4_shell_model.py tests/test_v1_r6_gate_expand.py \
             tests/test_hook_pinning.py tests/test_e8_fail_closed.py tests/test_v1_r2_isolation.py
@@ -436,7 +443,9 @@ jobs:
         with:
           python-version: '3.12'
           cache: pip
-          cache-dependency-path: requirements-dev.txt
+          cache-dependency-path: |
+            requirements-dev.txt
+            .github/ci-constraints.txt
 
       - name: Set up Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -446,7 +455,7 @@ jobs:
       - name: Install dev dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements-dev.txt
+          pip install -r requirements-dev.txt -c .github/ci-constraints.txt
 
       - name: Fresh-install e2e from the packed tarball
         run: |
